@@ -107,5 +107,5 @@ class CMSConan(ConanFile):
             self.copy("*.a", dst="lib", src=src_build_dir)
 
     def package_info(self):
-        self.cpp_info.release.libs = ["pulsar", "pulsarnossl"]
-        self.cpp_info.debug.libs = ["pulsar", "pulsarnossl"]
+        self.cpp_info.release.libs = ["pulsar"]
+        self.cpp_info.debug.libs = ["pulsar"]
