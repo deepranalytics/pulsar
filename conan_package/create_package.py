@@ -27,7 +27,7 @@ def printFooter():
         \rGenerate below command from "Set Me Up" tab in {bcolors.OKBLUE}https://deeprdev.jfrog.io{bcolors.ENDC}
         \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} remote add <remote_name> {bcolors.OKBLUE}https://deeprdev.jfrog.io/artifactory/api/conan/deepr-conan{bcolors.ENDC}
         \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} user -p <password> -r <remote_name> <username>
-        \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} upload ScannerAPI/1.0@<target/builds> -r <remote_name> --all --force
+        \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} upload pulsar/1.0@{g_maturity}/{g_release_type} -r <remote_name> --all --force
         """
     )
 
