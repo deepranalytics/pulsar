@@ -105,8 +105,8 @@ ENDIF ()
 MESSAGE(STATUS "CMAKE_BUILD_TYPE:  " ${CMAKE_BUILD_TYPE})
 
 #option(CMAKE_USE_WIN32_THREADS_INIT "using win32 thread" ON)
-#set(THREADS_PREFER_PTHREAD_FLAG TRUE)
-#find_package(Threads REQUIRED)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
 MESSAGE(STATUS "Threads library: " ${CMAKE_THREAD_LIBS_INIT})
 
 set(Boost_NO_BOOST_CMAKE ON)
@@ -122,7 +122,7 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
     # ?? Don't have this to test with
 else() # GCC or Clang are mostly compatible:
     # Turn on warnings and enable warnings-as-errors:
-    add_compile_options(-Wall -Wformat-security -Wvla -Werror) 
+    #add_compile_options(-Wall -Wformat-security -Wvla -Werror) 
     # Turn off certain warnings that are too much pain for too little gain:
     add_compile_options(-Wno-sign-compare -Wno-deprecated-declarations -Wno-error=cpp)
     if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
@@ -170,7 +170,7 @@ unset(OPENSSL_LIBRARIES CACHE)
 unset(OPENSSL_VERSION CACHE)
 
 find_package(Protobuf REQUIRED)
-find_package(curl REQUIRED)
+#find_package(curl REQUIRED)
 message("curl found? ${curl_FOUND}")
 message("conan protobuf: ${CONAN_LIB_DIRS_PROTOBUF}")
 
