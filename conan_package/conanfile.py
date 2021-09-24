@@ -38,7 +38,7 @@ class CMSConan(ConanFile):
         "log4cplus:shared":False,
         "openssl:shared":False,
         "protobuf:shared":False,
-        "cryptopp:shared":False
+        #"cryptopp:shared":False
         }
     generators = "cmake" #, "cmake_find_package"
     no_copy_source = True
@@ -58,8 +58,8 @@ class CMSConan(ConanFile):
             "nlohmann_json/3.9.1",
             "openssl/1.1.1k",
             "protobuf/3.17.1",
-            "dlfcn/1.0.0@prod/stable",
-            "cryptopp/8.5.0"
+            #"dlfcn/1.0.0@prod/stable",
+            #"cryptopp/8.5.0"
         ]
 
         for deps in requirements:
