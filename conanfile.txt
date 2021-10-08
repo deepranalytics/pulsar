@@ -4,9 +4,9 @@ log4cplus/2.0.4
 nlohmann_json/3.9.1
 openssl/1.1.1k
 protobuf/3.17.1
-#cryptopp/8.5.0
-#dlfcn/1.0.0@prod/stable
-libcurl/7.78.0
+cryptopp/8.5.0
+dlfcn/1.0.0@prod/stable
+#libcurl/7.78.0
 
 [generators]
 cmake
@@ -16,4 +16,4 @@ boost:shared=False
 log4cplus:shared=False
 openssl:shared=False
 protobuf:shared=False
-#cryptopp:shared=False
+cryptopp:shared=False
