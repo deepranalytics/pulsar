@@ -170,8 +170,10 @@ unset(OPENSSL_LIBRARIES CACHE)
 unset(OPENSSL_VERSION CACHE)
 
 find_package(Protobuf REQUIRED)
-#find_package(curl REQUIRED)
-message("curl found? ${curl_FOUND}")
+if(WIN32)
+    find_package(curl REQUIRED)
+    message("curl found? ${curl_FOUND}")
+endif()
 message("conan protobuf: ${CONAN_LIB_DIRS_PROTOBUF}")
 
 message("link static: ${LINK_STATIC}")
