@@ -21,6 +21,9 @@ package org.apache.pulsar.broker.transaction;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotNull;
+
 import com.google.common.util.concurrent.MoreExecutors;
 import io.netty.channel.EventLoopGroup;
 import java.util.ArrayList;
@@ -293,22 +296,16 @@ public abstract class TransactionTestBase extends TestRetrySupport {
             log.warn("Failed to clean up mocked pulsar service:", e);
         }
     }
-    public void waitForCoordinatorToBeAvailable(int numOfTCPerBroker){
+    public boolean waitForCoordinatorToBeAvailable(int numOfBroker, int numOfTCPerBroker){
         // wait tc init success to ready state
-        Awaitility.await().until(() -> {
-            Map<TransactionCoordinatorID, TransactionMetadataStore> stores =
-                    getPulsarServiceList().get(brokerCount-1).getTransactionMetadataStoreService().getStores();
-            if (stores.size() == numOfTCPerBroker) {
-                for (TransactionCoordinatorID transactionCoordinatorID : stores.keySet()) {
-                    if (((MLTransactionMetadataStore) stores.get(transactionCoordinatorID)).getState()
-                            != TransactionMetadataStoreState.State.Ready) {
-                        return false;
-                    }
-                }
-                return true;
-            } else {
-                return false;
-            }
+        Awaitility.await().untilAsserted(() -> {
+            TransactionMetadataStore transactionMetadataStore =
+                    getPulsarServiceList().get(numOfBroker - 1).getTransactionMetadataStoreService()
+                            .getStores().get(TransactionCoordinatorID.get(numOfTCPerBroker - 1));
+            assertNotNull(transactionMetadataStore);
+            assertEquals(((MLTransactionMetadataStore) transactionMetadataStore).getState(),
+                    TransactionMetadataStoreState.State.Ready);
         });
+        return true;
     }
 }

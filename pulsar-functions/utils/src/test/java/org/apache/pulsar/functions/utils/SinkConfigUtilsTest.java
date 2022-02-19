@@ -52,7 +52,6 @@ import static org.apache.pulsar.common.functions.FunctionConfig.ProcessingGuaran
 import static org.mockito.ArgumentMatchers.any;
 import static org.powermock.api.mockito.PowerMockito.mockStatic;
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.expectThrows;
 
@@ -83,11 +82,7 @@ public class SinkConfigUtilsTest extends PowerMockTestCase {
         sinkConfig.setArchive("builtin://jdbc");
         sinkConfig.setSourceSubscriptionName("test-subscription");
         Map<String, ConsumerConfig> inputSpecs = new HashMap<>();
-        inputSpecs.put("test-input", ConsumerConfig.builder()
-                .isRegexPattern(true)
-                .receiverQueueSize(532)
-                .serdeClassName("test-serde")
-                .poolMessages(true).build());
+        inputSpecs.put("test-input", ConsumerConfig.builder().isRegexPattern(true).receiverQueueSize(532).serdeClassName("test-serde").build());
         sinkConfig.setInputs(Collections.singleton("test-input"));
         sinkConfig.setInputSpecs(inputSpecs);
         sinkConfig.setProcessingGuarantees(FunctionConfig.ProcessingGuarantees.ATLEAST_ONCE);
@@ -380,24 +375,5 @@ public class SinkConfigUtilsTest extends PowerMockTestCase {
             throw new RuntimeException("Something wrong with the test", e);
         }
         return sinkConfig;
-    }
-
-    @Test
-    public void testPoolMessages() throws IOException {
-        SinkConfig sinkConfig = createSinkConfig();
-        Function.FunctionDetails functionDetails = SinkConfigUtils.convert(sinkConfig, new SinkConfigUtils.ExtractedSinkDetails(null, null));
-        assertFalse(functionDetails.getSource().getInputSpecsMap().get("test-input").getPoolMessages());
-        SinkConfig convertedConfig = SinkConfigUtils.convertFromDetails(functionDetails);
-        assertFalse(convertedConfig.getInputSpecs().get("test-input").isPoolMessages());
-
-        Map<String, ConsumerConfig> inputSpecs = new HashMap<>();
-        inputSpecs.put("test-input", ConsumerConfig.builder()
-                .poolMessages(true).build());
-        sinkConfig.setInputSpecs(inputSpecs);
-
-        functionDetails = SinkConfigUtils.convert(sinkConfig, new SinkConfigUtils.ExtractedSinkDetails(null, null));
-        assertTrue(functionDetails.getSource().getInputSpecsMap().get("test-input").getPoolMessages());
-        convertedConfig = SinkConfigUtils.convertFromDetails(functionDetails);
-        assertTrue(convertedConfig.getInputSpecs().get("test-input").isPoolMessages());
     }
 }

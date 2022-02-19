@@ -33,7 +33,6 @@ import org.apache.pulsar.broker.authentication.AuthenticationService;
 import org.apache.pulsar.common.configuration.PulsarConfigurationLoader;
 import org.apache.pulsar.broker.web.plugin.servlet.AdditionalServletWithClassLoader;
 import org.apache.pulsar.common.policies.data.ClusterData;
-import org.apache.pulsar.common.util.CmdGenerateDocs;
 import org.apache.pulsar.websocket.WebSocketConsumerServlet;
 import org.apache.pulsar.websocket.WebSocketPingPongServlet;
 import org.apache.pulsar.websocket.WebSocketProducerServlet;
@@ -87,9 +86,6 @@ public class ProxyServiceStarter {
     @Parameter(names = { "-h", "--help" }, description = "Show this help message")
     private boolean help = false;
 
-    @Parameter(names = {"-g", "--generate-docs"}, description = "Generate docs")
-    private boolean generateDocs = false;
-
     private ProxyConfiguration config;
 
     private ProxyService proxyService;
@@ -115,13 +111,6 @@ public class ProxyServiceStarter {
                 if (help || isBlank(configFile)) {
                     jcommander.usage();
                     return;
-                }
-
-                if (this.generateDocs) {
-                    CmdGenerateDocs cmd = new CmdGenerateDocs("pulsar");
-                    cmd.addCommand("proxy", this);
-                    cmd.run(null);
-                    System.exit(0);
                 }
             } catch (Exception e) {
                 jcommander.usage();

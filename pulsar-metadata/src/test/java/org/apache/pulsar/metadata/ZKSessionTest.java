@@ -22,10 +22,13 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
+
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+
 import lombok.Cleanup;
+
 import org.apache.pulsar.metadata.api.MetadataStoreConfig;
 import org.apache.pulsar.metadata.api.coordination.CoordinationService;
 import org.apache.pulsar.metadata.api.coordination.LeaderElection;
@@ -127,7 +130,7 @@ public class ZKSessionTest extends BaseMetadataStoreTest {
         e = sessionEvents.poll(10, TimeUnit.SECONDS);
         assertEquals(e, SessionEvent.SessionReestablished);
 
-        Awaitility.await().untilAsserted(() -> {
+        Awaitility.waitAtMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
             assertFalse(lock.getLockExpiredFuture().isDone());
         });
 
@@ -167,15 +170,25 @@ public class ZKSessionTest extends BaseMetadataStoreTest {
 
         e = sessionEvents.poll(10, TimeUnit.SECONDS);
         assertEquals(e, SessionEvent.SessionLost);
-        // --- test  le1 can be leader
-        Awaitility.await()
-                .untilAsserted(()-> assertEquals(le1.getState(),LeaderElectionState.Leading)); // reacquire leadership
+
+        Awaitility.await().untilAsserted(() -> {
+            assertEquals(le1.getState(), LeaderElectionState.Leading);
+        });
+
+        les = leaderElectionEvents.poll();
+        assertNull(les);
+
         e = sessionEvents.poll(10, TimeUnit.SECONDS);
         assertEquals(e, SessionEvent.Reconnected);
         e = sessionEvents.poll(10, TimeUnit.SECONDS);
         assertEquals(e, SessionEvent.SessionReestablished);
-        Awaitility.await()
-                .untilAsserted(()-> assertEquals(le1.getState(),LeaderElectionState.Leading));
+
+        Awaitility.await().untilAsserted(() -> {
+                    assertEquals(le1.getState(), LeaderElectionState.Leading);
+        });
+        les = leaderElectionEvents.poll();
+        assertNull(les);
+
         assertTrue(store.get(path).join().isPresent());
     }
 }

@@ -19,45 +19,13 @@
 
 cmake_minimum_required(VERSION 3.4)
 project (pulsar-cpp)
-
-#set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_LIST_DIR}/x64/unix/${CMAKE_BUILD_TYPE})
-#use conan for resolving external libs
-
-# if(CONAN_EXPORTED) # in conan local cache
-#     # standard conan installation, deps will be defined in conanfile.py
-#     # and not necessary to call conan again, conan is already running
-#     include(${CMAKE_BINARY_DIR}/../conanbuildinfo.cmake)
-#     conan_basic_setup()
-#     message("conan exported")
-# else() # in user space
-#     # Make sure to use conanfile.py to define dependencies, to stay consistent
-#     include(${CMAKE_CURRENT_LIST_DIR}/conan/conanbuildinfo.cmake)
-#     conan_basic_setup()
-#     message("in user space")
-# endif()
-
-if(WIN32)
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMS_DESTINATION_DIR})
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMS_DESTINATION_DIR})
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMS_DESTINATION_DIR})
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMS_DESTINATION_DIR})
-elseif(UNIX)
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMS_DESTINATION_DIR})
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${CMS_DESTINATION_DIR})
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMS_DESTINATION_DIR})
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMS_DESTINATION_DIR})
-endif()
-
-message("proto libs are: ${CONAN_LIBS_PROTOBUF} ")
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake_modules")
-set(PROTOC_PATH "${CONAN_BIN_DIRS_PROTOBUF}/protoc")
 
 if (VCPKG_TRIPLET)
     message(STATUS "Use vcpkg, triplet is ${VCPKG_TRIPLET}")
     set(CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/vcpkg_installed/${VCPKG_TRIPLET}")
     message(STATUS "Use CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
-    
-    message("protoc path: ${PROTOC_PATH}")
+    set(PROTOC_PATH "${CMAKE_PREFIX_PATH}/tools/protobuf/protoc")
     message(STATUS "Use protoc: ${PROTOC_PATH}")
     set(VCPKG_DEBUG_ROOT "${CMAKE_SOURCE_DIR}/vcpkg_installed/${VCPKG_TRIPLET}/debug")
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -81,18 +49,15 @@ option(BUILD_STATIC_LIB "Build static lib" ON)
 MESSAGE(STATUS "BUILD_STATIC_LIB:  " ${BUILD_STATIC_LIB})
 
 option(BUILD_TESTS "Build tests" ON)
-set(BUILD_TESTS OFF)
 MESSAGE(STATUS "BUILD_TESTS:  " ${BUILD_TESTS})
 
 option(BUILD_PYTHON_WRAPPER "Build Pulsar Python wrapper" ON)
-set(BUILD_PYTHON_WRAPPER OFF)
 MESSAGE(STATUS "BUILD_PYTHON_WRAPPER:  " ${BUILD_PYTHON_WRAPPER})
 
 option(BUILD_PERF_TOOLS "Build Pulsar CLI perf producer/consumer" OFF)
 MESSAGE(STATUS "BUILD_PERF_TOOLS:  " ${BUILD_PERF_TOOLS})
 
 option(LINK_STATIC "Link against static libraries" OFF)
-set(LINK_STATIC ON)
 MESSAGE(STATUS "LINK_STATIC:  " ${LINK_STATIC})
 
 option(USE_LOG4CXX "Build with Log4cxx support" OFF)
@@ -104,7 +69,6 @@ ENDIF ()
 
 MESSAGE(STATUS "CMAKE_BUILD_TYPE:  " ${CMAKE_BUILD_TYPE})
 
-#option(CMAKE_USE_WIN32_THREADS_INIT "using win32 thread" ON)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 MESSAGE(STATUS "Threads library: " ${CMAKE_THREAD_LIBS_INIT})
@@ -113,28 +77,16 @@ set(Boost_NO_BOOST_CMAKE ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_C_STANDARD 11)
 
-# Compiler specific configuration:
-# https://stackoverflow.com/questions/10046114/in-cmake-how-can-i-test-if-the-compiler-is-clang
-if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+if (MSVC)
+    # Visual Studio compiler flags
     add_definitions(-DWIN32_LEAN_AND_MEAN -DNOGDI -D_WIN32_WINNT=0x0501 -D_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/wd4244 /wd4267 /wd4018 /wd4715 /wd4251 /wd4275)
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
-    # ?? Don't have this to test with
-else() # GCC or Clang are mostly compatible:
-    # Turn on warnings and enable warnings-as-errors:
-    #add_compile_options(-Wall -Wformat-security -Wvla -Werror) 
-    # Turn off certain warnings that are too much pain for too little gain:
-    add_compile_options(-Wno-sign-compare -Wno-deprecated-declarations -Wno-error=cpp)
+else()
+    add_compile_options(-Werror=switch -Wno-deprecated-declarations)
     if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
         add_compile_options(-msse4.2 -mpclmul)
     endif()
-    # Options unique to Clang or GCC:
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        add_compile_options(-Qunused-arguments) 
-    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.9))
-        add_compile_options(-Wno-stringop-truncation)
-    endif()
-endif()
+endif(MSVC)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -155,7 +107,7 @@ if (APPLE)
     set(OPENSSL_ROOT_DIR /usr/local/opt/openssl/ /opt/homebrew/opt/openssl)
 endif ()
 
-set(OPENSSL_USE_STATIC_LIBS TRUE)
+set(OPENSSL_USE_STATIC_LIBS FALSE)
 find_package(OpenSSL REQUIRED)
 set(RECORD_OPENSSL_SSL_LIBRARY ${OPENSSL_SSL_LIBRARY})
 set(RECORD_OPENSSL_CRYPTO_LIBRARY ${OPENSSL_CRYPTO_LIBRARY})
@@ -169,22 +121,14 @@ unset(OPENSSL_SSL_LIBRARIES CACHE)
 unset(OPENSSL_LIBRARIES CACHE)
 unset(OPENSSL_VERSION CACHE)
 
-find_package(Protobuf REQUIRED)
-if(WIN32)
-    find_package(curl REQUIRED)
-    message("curl found? ${curl_FOUND}")
-endif()
-message("conan protobuf: ${CONAN_LIB_DIRS_PROTOBUF}")
-
-message("link static: ${LINK_STATIC}")
 if (LINK_STATIC)
     find_library(ZLIB_LIBRARIES REQUIRED NAMES libz.a z zlib)
-    find_library(Protobuf_LIBRARIES NAMES libprotobuf.a libprotobuf)
+    find_library(Protobuf_LITE_LIBRARIES NAMES libprotobuf-lite.a libprotobuf-lite)
     find_library(CURL_LIBRARIES NAMES libcurl.a curl curl_a libcurl_a)
     find_library(LIB_ZSTD NAMES libzstd.a)
     find_library(LIB_SNAPPY NAMES libsnappy.a)
-    message(STATUS "Protobuf_LIBRARIES: ${Protobuf_LIBRARIES}")
-    set(COMMON_LIBS ${Protobuf_LIBRARIES} ${COMMON_LIBS})
+    message(STATUS "Protobuf_LITE_LIBRARIES: ${Protobuf_LITE_LIBRARIES}")
+    set(COMMON_LIBS ${Protobuf_LITE_LIBRARIES} ${COMMON_LIBS})
 
     if (USE_LOG4CXX)
         if (LOG4CXX_USE_DYNAMIC_LIBS)
@@ -219,32 +163,28 @@ else()
     find_package(ZLIB REQUIRED)
     set(ZLIB_LIBRARIES ${ZLIB_LIBRARIES})
     # NOTE: The default MODULE mode may not find debug libraries so use CONFIG mode here
-    unset(Protobuf_INCLUDE_DIRS CACHE)
-    unset(Protobuf_LIBRARIES CACHE)
     find_package(Protobuf QUIET CONFIG)
-
-    message("protobuf libs: ${Protobuf_LIBRARIES}")
     # NOTE: On Windows x86 platform, Protobuf_FOUND might be set false but Protobuf_INCLUDE_DIRS and
-    # Protobuf_LIBRARIES are both found.
-    if (Protobuf_INCLUDE_DIRS AND Protobuf_LIBRARIES AND NOT Protobuf_FOUND)
+    # Protobuf_LITE_LIBRARIES are both found.
+    if (Protobuf_INCLUDE_DIRS AND Protobuf_LITE_LIBRARIES AND NOT Protobuf_FOUND)
         set(Protobuf_FOUND TRUE)
     endif ()
     if (Protobuf_FOUND)
         message("Found Protobuf in config mode")
-        message(STATUS "Protobuf_LIBRARIES these: ${Protobuf_LIBRARIES}")
+        message(STATUS "Protobuf_LITE_LIBRARIES: ${Protobuf_LITE_LIBRARIES}")
         message(STATUS "Protobuf_INCLUDE_DIRS: ${Protobuf_INCLUDE_DIRS}")
     else ()
         message("Failed to find Protobuf in config mode, try to find it from system path")
-        find_library(Protobuf_LIBRARIES protobuf libprotobuf)
+        find_library(Protobuf_LITE_LIBRARIES protobuf-lite libprotobuf-lite)
         find_path(Protobuf_INCLUDE_DIRS google/protobuf/stubs/common.h)
-        message(STATUS "Protobuf_LIBRARIES dfhgt: ${Protobuf_LIBRARIES}")
+        message(STATUS "Protobuf_LITE_LIBRARIES: ${Protobuf_LITE_LIBRARIES}")
         message(STATUS "Protobuf_INCLUDE_DIRS: ${Protobuf_INCLUDE_DIRS}")
     endif ()
 
     if (${Protobuf_FOUND} AND (${CMAKE_VERSION} VERSION_GREATER 3.8))
-        set(COMMON_LIBS protobuf::libprotobuf ${COMMON_LIBS})
+        set(COMMON_LIBS protobuf::libprotobuf-lite ${COMMON_LIBS})
     else ()
-        set(COMMON_LIBS ${Protobuf_LIBRARIES} ${COMMON_LIBS})
+        set(COMMON_LIBS ${Protobuf_LITE_LIBRARIES} ${COMMON_LIBS})
     endif ()
 
     if (MSVC AND (${CMAKE_BUILD_TYPE} STREQUAL Debug))
@@ -269,6 +209,7 @@ else()
     endif (USE_LOG4CXX)
 endif (LINK_STATIC)
 
+
 find_package(Boost)
 
 if (Boost_MAJOR_VERSION EQUAL 1 AND Boost_MINOR_VERSION LESS 69)
@@ -288,8 +229,6 @@ if (CMAKE_COMPILER_IS_GNUCC AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.9)
     MESSAGE(STATUS "Using Boost::Regex")
 else()
     MESSAGE(STATUS "Using std::regex")
-    # Turn on color error messages and show additional help with errors (only available in GCC v4.9+):
-    add_compile_options(-fdiagnostics-show-option -fdiagnostics-color)
 endif()
 
 if(BUILD_PERF_TOOLS)
@@ -346,10 +285,7 @@ if (NOT APPLE AND NOT MSVC)
     # we don't set options below to build _pulsar.so
     set(CMAKE_CXX_FLAGS_PYTHON "${CMAKE_CXX_FLAGS}")
     # Hide all non-exported symbols to avoid conflicts
-    add_compile_options(-fvisibility=hidden) 
-    if (CMAKE_COMPILER_IS_GNUCC)
-        add_compile_options(-Wl,--exclude-libs,ALL)
-    endif ()
+    set(CMAKE_CXX_FLAGS " -fvisibility=hidden -Wl,--exclude-libs,ALL ${CMAKE_CXX_FLAGS}")
 endif ()
 
 if (LIB_ZSTD)
@@ -388,7 +324,7 @@ include_directories(
 
 set(COMMON_LIBS
   ${COMMON_LIBS}
-  #Threads::Threads
+  Threads::Threads
   ${Boost_REGEX_LIBRARY}
   ${Boost_SYSTEM_LIBRARY}
   ${CURL_LIBRARIES}
@@ -411,8 +347,7 @@ else()
     set(COMMON_LIBS
     ${COMMON_LIBS}
     wldap32.lib
-    Normaliz.lib
-    crypt32.lib)
+    Normaliz.lib)
 endif()
 
 if (USE_LOG4CXX)
@@ -460,7 +395,7 @@ if(BUILD_PERF_TOOLS)
 endif(BUILD_PERF_TOOLS)
 
 if (BUILD_DYNAMIC_LIB)
-    #add_subdirectory(examples)
+    add_subdirectory(examples)
 endif()
 
 if (BUILD_TESTS)

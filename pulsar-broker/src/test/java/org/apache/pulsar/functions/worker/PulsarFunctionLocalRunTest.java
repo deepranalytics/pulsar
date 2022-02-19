@@ -1038,7 +1038,7 @@ public class PulsarFunctionLocalRunTest {
     }
 
     @Test
-    public void testPulsarSinkStatsByteBufferType() throws Throwable{
+    public void test() throws Throwable{
         runWithNarClassLoader(() -> testPulsarSinkLocalRun(null, 1, StatsNullSink.class.getName()));
     }
 

@@ -238,8 +238,6 @@ The Apache Software License, Version 2.0
     - netty-codec-dns-4.1.66.Final.jar
     - netty-codec-http-4.1.66.Final.jar
     - netty-codec-haproxy-4.1.66.Final.jar
-    - netty-codec-socks-4.1.66.Final.jar
-    - netty-handler-proxy-4.1.66.Final.jar
     - netty-common-4.1.66.Final.jar
     - netty-handler-4.1.66.Final.jar
     - netty-reactive-streams-2.0.4.jar
@@ -253,22 +251,22 @@ The Apache Software License, Version 2.0
  * Joda Time
     - joda-time-2.10.5.jar
   * Jetty
-    - http2-client-9.4.43.v20210629.jar
-    - http2-common-9.4.43.v20210629.jar
-    - http2-hpack-9.4.43.v20210629.jar
-    - http2-http-client-transport-9.4.43.v20210629.jar
-    - jetty-alpn-client-9.4.43.v20210629.jar
-    - http2-server-9.4.43.v20210629.jar
-    - jetty-alpn-java-client-9.4.43.v20210629.jar
-    - jetty-client-9.4.43.v20210629.jar
-    - jetty-http-9.4.43.v20210629.jar
-    - jetty-io-9.4.43.v20210629.jar
-    - jetty-jmx-9.4.43.v20210629.jar
-    - jetty-security-9.4.43.v20210629.jar
-    - jetty-server-9.4.43.v20210629.jar
-    - jetty-servlet-9.4.43.v20210629.jar
-    - jetty-util-9.4.43.v20210629.jar
-    - jetty-util-ajax-9.4.43.v20210629.jar
+    - http2-client-9.4.42.v20210604.jar
+    - http2-common-9.4.42.v20210604.jar
+    - http2-hpack-9.4.42.v20210604.jar
+    - http2-http-client-transport-9.4.42.v20210604.jar
+    - jetty-alpn-client-9.4.42.v20210604.jar
+    - jetty-alpn-java-client-9.4.42.v20210604.jar
+    - http2-server-9.4.42.v20210604.jar
+    - jetty-client-9.4.42.v20210604.jar
+    - jetty-http-9.4.42.v20210604.jar
+    - jetty-io-9.4.42.v20210604.jar
+    - jetty-jmx-9.4.42.v20210604.jar
+    - jetty-security-9.4.42.v20210604.jar
+    - jetty-server-9.4.42.v20210604.jar
+    - jetty-servlet-9.4.42.v20210604.jar
+    - jetty-util-9.4.42.v20210604.jar
+    - jetty-util-ajax-9.4.42.v20210604.jar
   * Apache BVal
     - bval-jsr-2.0.0.jar
   * Bytecode
@@ -276,7 +274,7 @@ The Apache Software License, Version 2.0
   * CGLIB Nodep
     - cglib-nodep-3.3.0.jar
   * Airlift
-    - aircompressor-0.19.jar
+    - aircompressor-0.20.jar
     - airline-0.8.jar
     - bootstrap-0.199.jar
     - bootstrap-0.195.jar
@@ -346,8 +344,8 @@ The Apache Software License, Version 2.0
     - maven-settings-builder-3.0.5.jar
 	- wagon-provider-api-2.4.jar
   * OkHttp
-    - okhttp-3.14.9.jar
-    - okhttp-urlconnection-3.14.9.jar
+    - okhttp-3.9.0.jar
+    - okhttp-urlconnection-3.9.0.jar
   * OpenCSV
     - opencsv-2.3.jar
   * Plexus
@@ -377,7 +375,7 @@ The Apache Software License, Version 2.0
   * Objenesis
     - objenesis-2.6.jar
   * Okio
-    - okio-1.17.2.jar
+    - okio-1.13.0.jar
   * Presto
     - presto-array-332.jar
     - presto-cli-332.jar
@@ -414,18 +412,18 @@ The Apache Software License, Version 2.0
     - async-http-client-2.12.1.jar
     - async-http-client-netty-utils-2.12.1.jar
   * Apache Bookkeeper
-    - bookkeeper-common-4.14.1.jar
-    - bookkeeper-common-allocator-4.14.1.jar
-    - bookkeeper-proto-4.14.1.jar
-    - bookkeeper-server-4.14.1.jar
-    - bookkeeper-stats-api-4.14.1.jar
-    - bookkeeper-tools-framework-4.14.1.jar
-    - circe-checksum-4.14.1.jar
-    - codahale-metrics-provider-4.14.1.jar
-    - cpu-affinity-4.14.1.jar
-    - http-server-4.14.1.jar
-    - prometheus-metrics-provider-4.14.1.jar
-    - codahale-metrics-provider-4.14.1.jar
+    - bookkeeper-common-4.14.2.jar
+    - bookkeeper-common-allocator-4.14.2.jar
+    - bookkeeper-proto-4.14.2.jar
+    - bookkeeper-server-4.14.2.jar
+    - bookkeeper-stats-api-4.14.2.jar
+    - bookkeeper-tools-framework-4.14.2.jar
+    - circe-checksum-4.14.2.jar
+    - codahale-metrics-provider-4.14.2.jar
+    - cpu-affinity-4.14.2.jar
+    - http-server-4.14.2.jar
+    - prometheus-metrics-provider-4.14.2.jar
+    - codahale-metrics-provider-4.14.2.jar
   * Apache Commons
     - commons-cli-1.2.jar
     - commons-codec-1.15.jar

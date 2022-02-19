@@ -18,21 +18,7 @@
  */
 package org.apache.pulsar.broker.admin;
 
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import com.google.common.collect.Sets;
-import java.lang.reflect.Field;
-import java.util.Collection;
-import java.util.Date;
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import javax.ws.rs.container.AsyncResponse;
-import javax.ws.rs.container.TimeoutHandler;
-import javax.ws.rs.core.UriInfo;
 import org.apache.pulsar.broker.admin.v2.PersistentTopics;
 import org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest;
 import org.apache.pulsar.broker.authentication.AuthenticationDataHttps;
@@ -54,6 +40,22 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
+
+import javax.ws.rs.container.AsyncResponse;
+import javax.ws.rs.container.TimeoutHandler;
+import javax.ws.rs.core.UriInfo;
+import java.lang.reflect.Field;
+import java.util.Collection;
+import java.util.Date;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 
 @Test(groups = "broker")
 public class AdminApiGetLastMessageIdTest extends MockedPulsarServiceBaseTest {
@@ -85,6 +87,7 @@ public class AdminApiGetLastMessageIdTest extends MockedPulsarServiceBaseTest {
         persistentTopics.setServletContext(new MockServletContext());
         persistentTopics.setPulsar(pulsar);
 
+        doReturn(mockZooKeeper).when(persistentTopics).localZk();
         doReturn(false).when(persistentTopics).isRequestHttps();
         doReturn(null).when(persistentTopics).originalPrincipal();
         doReturn("test").when(persistentTopics).clientAppId();
@@ -202,7 +205,9 @@ public class AdminApiGetLastMessageIdTest extends MockedPulsarServiceBaseTest {
         }
 
         persistentTopics.getLastMessageId(asyncResponse, "prop", "ns-abc", "my-topic", true);
-        Awaitility.await().until(() -> id[0] != null);
+        while (id[0] == null) {
+            Thread.sleep(1);
+        }
         Assert.assertTrue(((MessageIdImpl)id[0]).getLedgerId() >= 0);
         Assert.assertEquals(numberOfMessages-1, ((MessageIdImpl)id[0]).getEntryId());
         messageId = id[0];
