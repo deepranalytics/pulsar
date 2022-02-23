@@ -4,11 +4,9 @@ title: Set up a standalone Pulsar in Docker
 sidebar_label: Run Pulsar in Docker
 ---
 
-For local development and testing, you can run Pulsar in standalone
-mode on your own machine within a Docker container.
+For local development and testing, you can run Pulsar in standalone mode on your own machine within a Docker container. 
 
-If you have not installed Docker, download the [Community edition](https://www.docker.com/community-edition)
-and follow the instructions for your OS.
+If you have not installed Docker, download the [Community edition](https://www.docker.com/community-edition) and follow the instructions for your OS.
 
 ## Start Pulsar in Docker
 
@@ -19,9 +17,9 @@ and follow the instructions for your OS.
   ```
 
 A few things to note about this command:
-* The data, metadata, and configuration are persisted on Docker volumes in order to not start "fresh" every
-  time the container is restarted. For details on the volumes you can use `docker volume inspect <sourcename>`
-* For Docker on Windows make sure to configure it to use Linux containers
+ * The data, metadata, and configuration are persisted on Docker volumes in order to not start "fresh" every 
+time the container is restarted. For details on the volumes you can use `docker volume inspect <sourcename>`
+ * For Docker on Windows make sure to configure it to use Linux containers
 
 If you start Pulsar successfully, you will see `INFO`-level log messages like this:
 
@@ -32,15 +30,14 @@ If you start Pulsar successfully, you will see `INFO`-level log messages like th
 ...
 ```
 
-> #### Tip
->
+> **Tip**  
 > When you start a local standalone cluster, a `public/default`
 namespace is created automatically. The namespace is used for development purposes. All Pulsar topics are managed within namespaces.
 For more information, see [Topics](concepts-messaging.md#topics).
 
 ## Use Pulsar in Docker
 
-Pulsar offers client libraries for [Java](client-libraries-java.md), [Go](client-libraries-go.md), [Python](client-libraries-python.md)
+Pulsar offers client libraries for [Java](client-libraries-java.md), [Go](client-libraries-go.md), [Python](client-libraries-python.md) 
 and [C++](client-libraries-cpp.md). If you're running a local standalone cluster, you can
 use one of these root URLs to interact with your cluster:
 
@@ -181,6 +178,7 @@ The output is something like this:
             ],
             "isDurable": true,
             "isReplicated": false,
+            "allowOutOfOrderDelivery": false,
             "consumersAfterMarkDeletePosition": {},
             "nonContiguousDeletedMessagesRanges": 0,
             "nonContiguousDeletedMessagesRangesSerializedSize": 0,

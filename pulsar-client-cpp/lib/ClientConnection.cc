@@ -155,8 +155,7 @@ ClientConnection::ClientConnection(const std::string& logicalAddress, const std:
                                    ExecutorServicePtr executor,
                                    const ClientConfiguration& clientConfiguration,
                                    const AuthenticationPtr& authentication)
-    : state_(Pending),
-      operationsTimeout_(seconds(clientConfiguration.getOperationTimeoutSeconds())),
+    : operationsTimeout_(seconds(clientConfiguration.getOperationTimeoutSeconds())),
       authentication_(authentication),
       serverProtocolVersion_(ProtocolVersion_MIN),
       executor_(executor),
@@ -172,21 +171,13 @@ ClientConnection::ClientConnection(const std::string& logicalAddress, const std:
       logicalAddress_(logicalAddress),
       physicalAddress_(physicalAddress),
       cnxString_("[<none> -> " + physicalAddress + "] "),
-      error_(boost::system::error_code()),
       incomingBuffer_(SharedBuffer::allocate(DefaultBufferSize)),
-      incomingCmd_(),
       connectTimeoutTask_(std::make_shared<PeriodicTask>(executor_->getIOService(),
                                                          clientConfiguration.getConnectionTimeout())),
-      pendingWriteBuffers_(),
-      pendingWriteOperations_(0),
       outgoingBuffer_(SharedBuffer::allocate(DefaultBufferSize)),
-      outgoingCmd_(),
-      havePendingPingRequest_(false),
-      keepAliveTimer_(),
-      maxPendingLookupRequest_(clientConfiguration.getConcurrentLookupRequest()),
       consumerStatsRequestTimer_(executor_->createDeadlineTimer()),
-      numOfPendingLookupRequest_(0),
-      isTlsAllowInsecureConnection_(false) {
+      maxPendingLookupRequest_(clientConfiguration.getConcurrentLookupRequest()) {
+
     LOG_INFO(cnxString_ << "Create ClientConnection, timeout=" << clientConfiguration.getConnectionTimeout());
     if (clientConfiguration.isUseTls()) {
 #if BOOST_VERSION >= 105400
@@ -467,7 +458,14 @@ void ClientConnection::handleHandshake(const boost::system::error_code& err) {
     }
 
     bool connectingThroughProxy = logicalAddress_ != physicalAddress_;
-    SharedBuffer buffer = Commands::newConnect(authentication_, logicalAddress_, connectingThroughProxy);
+    Result result = ResultOk;
+    SharedBuffer buffer =
+        Commands::newConnect(authentication_, logicalAddress_, connectingThroughProxy, result);
+    if (result != ResultOk) {
+        LOG_ERROR(cnxString_ << "Failed to establish connection: " << result);
+        close(result);
+        return;
+    }
     // Send CONNECT command to broker
     asyncWrite(buffer.const_asio_buffer(), std::bind(&ClientConnection::handleSentPulsarConnect,
                                                      shared_from_this(), std::placeholders::_1, buffer));
@@ -553,7 +551,7 @@ void ClientConnection::handleResolve(const boost::system::error_code& err,
     if (endpointIterator != tcp::resolver::iterator()) {
         LOG_DEBUG(cnxString_ << "Resolved hostname " << endpointIterator->host_name()  //
                              << " to " << endpointIterator->endpoint());
-        socket_->async_connect(*endpointIterator++,
+        socket_->async_connect(*endpointIterator,
                                std::bind(&ClientConnection::handleTcpConnected, shared_from_this(),
                                          std::placeholders::_1, endpointIterator));
     } else {
@@ -724,6 +722,26 @@ bool ClientConnection::verifyChecksum(SharedBuffer& incomingBuffer_, uint32_t& r
         incomingBuffer_.setReaderIndex(readerIndex);
     }
     return isChecksumValid;
+}
+
+void ClientConnection::handleActiveConsumerChange(const proto::CommandActiveConsumerChange& change) {
+    Lock lock(mutex_);
+    ConsumersMap::iterator it = consumers_.find(change.consumer_id());
+    if (it != consumers_.end()) {
+        ConsumerImplPtr consumer = it->second.lock();
+
+        if (consumer) {
+            lock.unlock();
+            consumer->activeConsumerChanged(change.is_active());
+        } else {
+            consumers_.erase(change.consumer_id());
+            LOG_DEBUG(cnxString_ << "Ignoring incoming message for already destroyed consumer "
+                                 << change.consumer_id());
+        }
+    } else {
+        LOG_DEBUG(cnxString_ << "Got invalid consumer Id in " << change.consumer_id()
+                             << " -- isActive: " << change.is_active());
+    }
 }
 
 void ClientConnection::handleIncomingMessage(const proto::CommandMessage& msg, bool isChecksumValid,
@@ -1133,16 +1151,25 @@ void ClientConnection::handleIncomingCommand() {
                 case BaseCommand::AUTH_CHALLENGE: {
                     LOG_DEBUG(cnxString_ << "Received auth challenge from broker");
 
-                    SharedBuffer buffer = Commands::newAuthResponse(authentication_);
+                    Result result;
+                    SharedBuffer buffer = Commands::newAuthResponse(authentication_, result);
+                    if (result != ResultOk) {
+                        LOG_ERROR(cnxString_ << "Failed to send auth response: " << result);
+                        close(result);
+                        break;
+                    }
                     asyncWrite(buffer.const_asio_buffer(),
                                std::bind(&ClientConnection::handleSentAuthResponse, shared_from_this(),
                                          std::placeholders::_1, buffer));
+                    break;
                 }
 
                 case BaseCommand::ACTIVE_CONSUMER_CHANGE: {
-                    LOG_DEBUG(cnxString_ << "Received notification about active consumer changes");
-                    // ignore this message for now.
-                    // TODO: @link{https://github.com/apache/pulsar/issues/1240}
+                    const CommandActiveConsumerChange& change = incomingCmd_.active_consumer_change();
+                    LOG_DEBUG(cnxString_
+                              << "Received notification about active consumer change, consumer_id: "
+                              << change.consumer_id() << " isActive: " << change.is_active());
+                    handleActiveConsumerChange(change);
                     break;
                 }
 
@@ -1458,7 +1485,7 @@ void ClientConnection::handleConsumerStatsTimeout(const boost::system::error_cod
     startConsumerStatsTimer(consumerStatsRequests);
 }
 
-void ClientConnection::close() {
+void ClientConnection::close(Result result) {
     Lock lock(mutex_);
     if (isClosed()) {
         return;
@@ -1515,7 +1542,7 @@ void ClientConnection::close() {
         HandlerBase::handleDisconnection(ResultConnectError, shared_from_this(), it->second);
     }
 
-    connectPromise_.setFailed(ResultConnectError);
+    connectPromise_.setFailed(result);
 
     // Fail all pending requests, all these type are map whose value type contains the Promise object
     for (auto& kv : pendingRequests) {

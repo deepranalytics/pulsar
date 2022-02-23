@@ -28,7 +28,7 @@ The following table lists parameters supported for the `client credentials` auth
 | `type` | Oauth 2.0 authentication type. |  `client_credentials` (default) | Optional |
 | `issuerUrl` | URL of the authentication provider which allows the Pulsar client to obtain an access token | `https://accounts.google.com` | Required |
 | `privateKey` | URL to a JSON credentials file  | Support the following pattern formats: <br> <li> `file:///path/to/file` <li>`file:/path/to/file` <li> `data:application/json;base64,<base64-encoded value>` | Required |
-| `audience`  | An OAuth 2.0 "resource server" identifier for the Pulsar cluster | `https://broker.example.com` | Required |
+| `audience`  | An OAuth 2.0 "resource server" identifier for the Pulsar cluster | `https://broker.example.com` | Optional |
 
 The credentials file contains service account credentials used with the client authentication type. The following shows an example of a credentials file `credentials_file.json`.
 
@@ -63,7 +63,7 @@ In the above example, the mapping relationship is shown as below.
 
 - The `issuerUrl` parameter in this plugin is mapped to `--url https://dev-kt-aa9ne.us.auth0.com`.
 - The `privateKey` file parameter in this plugin should at least contains the `client_id` and `client_secret` fields.
-- The `audience` parameter in this plugin is mapped to  `"audience":"https://dev-kt-aa9ne.us.auth0.com/api/v2/"`.
+- The `audience` parameter in this plugin is mapped to  `"audience":"https://dev-kt-aa9ne.us.auth0.com/api/v2/"`. This field is only used by some identity providers.
 
 ## Client Configuration
 
@@ -195,7 +195,7 @@ This example shows how to use pulsar-perf to connect to a cluster through OAuth2
 
 ```shell script
 bin/pulsar-perf produce --service-url pulsar+ssl://streamnative.cloud:6651 \
---auth_plugin org.apache.pulsar.client.impl.auth.oauth2.AuthenticationOAuth2 \
+--auth-plugin org.apache.pulsar.client.impl.auth.oauth2.AuthenticationOAuth2 \
 --auth-params '{"privateKey":"file:///path/to/key/file.json",
     "issuerUrl":"https://dev-kt-aa9ne.us.auth0.com",
     "audience":"https://dev-kt-aa9ne.us.auth0.com/api/v2/"}' \

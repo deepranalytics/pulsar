@@ -18,9 +18,9 @@
  */
 package org.apache.pulsar.broker.admin.impl;
 
-import static org.apache.pulsar.broker.cache.ConfigurationCacheService.POLICIES;
+import static org.apache.pulsar.broker.PulsarService.isTransactionInternalName;
 import static org.apache.pulsar.broker.resources.PulsarResources.DEFAULT_OPERATION_TIMEOUT_SEC;
-import static org.apache.pulsar.common.util.Codec.decode;
+import static org.apache.pulsar.common.events.EventsTopicNames.checkTopicIsTransactionCoordinatorAssign;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.github.zafarkhaja.semver.Version;
 import com.google.common.collect.Lists;
@@ -65,7 +65,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.broker.PulsarServerException;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.admin.AdminResource;
-import org.apache.pulsar.broker.admin.ZkAdminPaths;
 import org.apache.pulsar.broker.authentication.AuthenticationDataSource;
 import org.apache.pulsar.broker.service.BrokerServiceException.AlreadyRunningException;
 import org.apache.pulsar.broker.service.BrokerServiceException.NotAllowedException;
@@ -131,6 +130,7 @@ import org.apache.pulsar.common.protocol.Commands;
 import org.apache.pulsar.common.util.DateFormatter;
 import org.apache.pulsar.common.util.FutureUtil;
 import org.apache.pulsar.common.util.collections.BitSetRecyclable;
+import org.apache.pulsar.transaction.coordinator.TransactionCoordinatorID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -148,7 +148,7 @@ public class PersistentTopicsBase extends AdminResource {
 
         // Validate that namespace exists, throws 404 if it doesn't exist
         try {
-            if (!namespaceResources().exists(path(POLICIES, namespaceName.toString()))) {
+            if (!namespaceResources().namespaceExists(namespaceName)) {
                 throw new RestException(Status.NOT_FOUND, "Namespace does not exist");
             }
         } catch (RestException re) {
@@ -158,32 +158,21 @@ public class PersistentTopicsBase extends AdminResource {
             throw new RestException(e);
         }
 
-        List<String> topics = Lists.newArrayList();
-
         try {
-            String path = String.format("/managed-ledgers/%s/%s", namespaceName.toString(), domain());
-            for (String topic : getLocalPolicies().getChildren(path)) {
-                if (domain().equals(TopicDomain.persistent.toString())) {
-                    topics.add(TopicName.get(domain(), namespaceName, decode(topic)).toString());
-                }
-            }
-        } catch (org.apache.pulsar.metadata.api.MetadataStoreException.NotFoundException e) {
-            // NoNode means there are no topics in this domain for this namespace
+            return topicResources().listPersistentTopicsAsync(namespaceName).thenApply(topics ->
+                    topics.stream().filter(topic ->
+                            !isTransactionInternalName(TopicName.get(topic))).collect(Collectors.toList())).join();
         } catch (Exception e) {
             log.error("[{}] Failed to get topics list for namespace {}", clientAppId(), namespaceName, e);
             throw new RestException(e);
         }
-
-        topics.sort(null);
-        return topics;
     }
 
     protected List<String> internalGetPartitionedTopicList() {
-        validateAdminAccessForTenant(namespaceName.getTenant());
         validateNamespaceOperation(namespaceName, NamespaceOperation.GET_TOPICS);
         // Validate that namespace exists, throws 404 if it doesn't exist
         try {
-            if (!namespaceResources().exists(path(POLICIES, namespaceName.toString()))) {
+            if (!namespaceResources().namespaceExists(namespaceName)) {
                 log.warn("[{}] Failed to get partitioned topic list {}: Namespace does not exist", clientAppId(),
                         namespaceName);
                 throw new RestException(Status.NOT_FOUND, "Namespace does not exist");
@@ -204,7 +193,7 @@ public class PersistentTopicsBase extends AdminResource {
         String topicUri = topicName.toString();
 
         try {
-            Policies policies = namespaceResources().get(path(POLICIES, namespaceName.toString()))
+            Policies policies = namespaceResources().getPolicies(namespaceName)
                     .orElseThrow(() -> new RestException(Status.NOT_FOUND, "Namespace does not exist"));
 
             Map<String, Set<AuthAction>> permissions = Maps.newHashMap();
@@ -254,6 +243,13 @@ public class PersistentTopicsBase extends AdminResource {
         }
     }
 
+    protected void validateCreateTopic(TopicName topicName) {
+        if (isTransactionInternalName(topicName)) {
+            log.warn("Try to create a topic in the system topic format! {}", topicName);
+            throw new RestException(Status.CONFLICT, "Cannot create topic in system topic format!");
+        }
+    }
+
     public void validateAdminOperationOnTopic(boolean authoritative) {
         validateAdminAccessForTenant(topicName.getTenant());
         validateTopicOwnership(topicName, authoritative);
@@ -261,7 +257,7 @@ public class PersistentTopicsBase extends AdminResource {
 
     private void grantPermissions(String topicUri, String role, Set<AuthAction> actions) {
         try {
-            namespaceResources().set(path(POLICIES, namespaceName.toString()), (policies) -> {
+            namespaceResources().setPolicies(namespaceName, policies -> {
                 if (!policies.auth_policies.getTopicAuthentication().containsKey(topicUri)) {
                     policies.auth_policies.getTopicAuthentication().put(topicUri, new HashMap<>());
                 }
@@ -315,7 +311,7 @@ public class PersistentTopicsBase extends AdminResource {
     private void revokePermissions(String topicUri, String role) {
         Policies policies;
         try {
-            policies = namespaceResources().get(path(POLICIES, namespaceName.toString()))
+            policies = namespaceResources().getPolicies(namespaceName)
                     .orElseThrow(() -> new RestException(Status.NOT_FOUND, "Namespace does not exist"));
         } catch (Exception e) {
             log.error("[{}] Failed to revoke permissions for topic {}", clientAppId(), topicUri, e);
@@ -328,9 +324,8 @@ public class PersistentTopicsBase extends AdminResource {
             throw new RestException(Status.PRECONDITION_FAILED, "Permissions are not set at the topic level");
         }
         try {
-            // Write the new policies to zookeeper
-            String namespacePath = path(POLICIES, namespaceName.toString());
-            namespaceResources().set(namespacePath, (p) -> {
+            // Write the new policies to metadata store
+            namespaceResources().setPolicies(namespaceName, p -> {
                 p.auth_policies.getTopicAuthentication().get(topicUri).remove(role);
                 return p;
             });
@@ -403,12 +398,12 @@ public class PersistentTopicsBase extends AdminResource {
      * @param numPartitions
      */
     protected void internalUpdatePartitionedTopic(int numPartitions,
-                                                  boolean updateLocalTopicOnly, boolean authoritative) {
+                                                  boolean updateLocalTopicOnly, boolean authoritative,
+                                                  boolean force) {
         validateTopicOwnership(topicName, authoritative);
         validateTopicPolicyOperation(topicName, PolicyName.PARTITION, PolicyOperation.WRITE);
-
         // Only do the validation if it's the first hop.
-        if (!updateLocalTopicOnly) {
+        if (!updateLocalTopicOnly && !force) {
             validatePartitionTopicUpdate(topicName.getLocalName(), numPartitions);
         }
         final int maxPartitions = pulsar().getConfig().getMaxNumPartitionsPerPartitionedTopic();
@@ -438,12 +433,12 @@ public class PersistentTopicsBase extends AdminResource {
             // other clusters and then update number of partitions.
             if (!updateLocalTopicOnly) {
                 CompletableFuture<Void> updatePartition = new CompletableFuture<>();
-                final String path = ZkAdminPaths.partitionedTopicPath(topicName);
                 updatePartitionInOtherCluster(numPartitions, clusters).thenRun(() -> {
                     try {
-                        namespaceResources().getPartitionedTopicResources().setAsync(path, (p) -> {
-                            return new PartitionedTopicMetadata(numPartitions);
-                        }).thenAccept(r -> updatePartition.complete(null)).exceptionally(ex -> {
+                        namespaceResources().getPartitionedTopicResources()
+                                .updatePartitionedTopicAsync(topicName, p ->
+                            new PartitionedTopicMetadata(numPartitions)
+                        ).thenAccept(r -> updatePartition.complete(null)).exceptionally(ex -> {
                             updatePartition.completeExceptionally(ex.getCause());
                             return null;
                         });
@@ -473,7 +468,8 @@ public class PersistentTopicsBase extends AdminResource {
         }
         try {
             tryCreatePartitionsAsync(numPartitions).get(DEFAULT_OPERATION_TIMEOUT_SEC, TimeUnit.SECONDS);
-            updatePartitionedTopic(topicName, numPartitions).get(DEFAULT_OPERATION_TIMEOUT_SEC, TimeUnit.SECONDS);
+            updatePartitionedTopic(topicName, numPartitions, force).get(DEFAULT_OPERATION_TIMEOUT_SEC,
+                    TimeUnit.SECONDS);
         } catch (Exception e) {
             if (e.getCause() instanceof RestException) {
                 throw (RestException) e.getCause();
@@ -519,9 +515,14 @@ public class PersistentTopicsBase extends AdminResource {
             if (cluster.equals(pulsar().getConfig().getClusterName())) {
                 return;
             }
-            results.add(pulsar().getBrokerService().getClusterPulsarAdmin(cluster).topics()
-                    .updatePartitionedTopicAsync(topicName.toString(),
-                            numPartitions, true));
+            CompletableFuture<Void> updatePartitionTopicFuture =
+                pulsar().getPulsarResources().getClusterResources().getClusterAsync(cluster)
+                    .thenApply(clusterDataOp ->
+                            pulsar().getBrokerService().getClusterPulsarAdmin(cluster, clusterDataOp))
+                    .thenCompose(pulsarAdmin ->
+                            pulsarAdmin.topics().updatePartitionedTopicAsync(
+                                    topicName.toString(), numPartitions, true, false));
+            results.add(updatePartitionTopicFuture);
         });
         return FutureUtil.waitForAll(results);
     }
@@ -647,12 +648,11 @@ public class PersistentTopicsBase extends AdminResource {
                 }
             }
             // Only tries to delete the znode for partitioned topic when all its partitions are successfully deleted
-            String path = path(PARTITIONED_TOPIC_PATH_ZNODE, namespaceName.toString(), domain(),
-                    topicName.getEncodedLocalName());
             try {
-                namespaceResources().getPartitionedTopicResources().deleteAsync(path).thenAccept(r2 -> {
-                    log.info("[{}] Deleted partitioned topic {}", clientAppId(), topicName);
-                    asyncResponse.resume(Response.noContent().build());
+                namespaceResources().getPartitionedTopicResources()
+                        .deletePartitionedTopicAsync(topicName).thenAccept(r2 -> {
+                            log.info("[{}] Deleted partitioned topic {}", clientAppId(), topicName);
+                            asyncResponse.resume(Response.noContent().build());
                 }).exceptionally(ex1 -> {
                     log.error("[{}] Failed to delete partitioned topic {}", clientAppId(), topicName, ex1.getCause());
                     if (ex1.getCause()
@@ -689,7 +689,11 @@ public class PersistentTopicsBase extends AdminResource {
         }
         // If the topic name is a partition name, no need to get partition topic metadata again
         if (topicName.isPartitioned()) {
-            internalUnloadNonPartitionedTopic(asyncResponse, authoritative);
+            if (checkTopicIsTransactionCoordinatorAssign(topicName)) {
+                internalUnloadTransactionCoordinator(asyncResponse, authoritative);
+            } else {
+                internalUnloadNonPartitionedTopic(asyncResponse, authoritative);
+            }
         } else {
             getPartitionedTopicMetadataAsync(topicName, authoritative, false)
                     .thenAccept(meta -> {
@@ -941,6 +945,29 @@ public class PersistentTopicsBase extends AdminResource {
                 });
     }
 
+    private void internalUnloadTransactionCoordinator(AsyncResponse asyncResponse, boolean authoritative) {
+        try {
+            validateTopicOperation(topicName, TopicOperation.UNLOAD);
+        } catch (Exception e) {
+            log.error("[{}] Failed to unload tc {},{}", clientAppId(), topicName.getPartitionIndex(), e.getMessage());
+            resumeAsyncResponseExceptionally(asyncResponse, e);
+            return;
+        }
+        validateTopicOwnershipAsync(topicName, authoritative)
+                .thenCompose(v -> pulsar()
+                .getTransactionMetadataStoreService()
+                .removeTransactionMetadataStore(TransactionCoordinatorID.get(topicName.getPartitionIndex())))
+                .thenRun(() -> {
+                    log.info("[{}] Successfully unloaded tc {}", clientAppId(), topicName.getPartitionIndex());
+                    asyncResponse.resume(Response.noContent().build());
+                }).exceptionally(ex -> {
+                    log.error("[{}] Failed to unload tc {}, {}", clientAppId(), topicName.getPartitionIndex(),
+                    ex.getMessage());
+            asyncResponse.resume(ex.getCause());
+            return null;
+        });
+    }
+
     protected void internalDeleteTopic(boolean authoritative, boolean force, boolean deleteSchema) {
         if (force) {
             internalDeleteTopicForcefully(authoritative, deleteSchema);
@@ -995,10 +1022,7 @@ public class PersistentTopicsBase extends AdminResource {
                         if (topicName.getDomain() == TopicDomain.persistent) {
                             final Map<Integer, CompletableFuture<Boolean>> existsFutures = Maps.newConcurrentMap();
                             for (int i = 0; i < partitionMetadata.partitions; i++) {
-                                String path = String.format("/managed-ledgers/%s/%s/%s", namespaceName.toString(),
-                                        domain(), topicName.getPartition(i).getEncodedLocalName());
-                                CompletableFuture<Boolean> exists = getLocalPolicies().existsAsync(path);
-                                existsFutures.put(i, exists);
+                                existsFutures.put(i, topicResources().persistentTopicExists(topicName.getPartition(i)));
                             }
                             FutureUtil.waitForAll(Lists.newArrayList(existsFutures.values())).thenApply(__ ->
                                     existsFutures.entrySet().stream().filter(e -> e.getValue().join().booleanValue())
@@ -1271,11 +1295,11 @@ public class PersistentTopicsBase extends AdminResource {
                     }
                 }
                 if (perPartition && stats.partitions.isEmpty()) {
-                    String path = ZkAdminPaths.partitionedTopicPath(topicName);
                     try {
-                        boolean zkPathExists = namespaceResources().getPartitionedTopicResources().exists(path);
-                        if (zkPathExists) {
-                            stats.getPartitions().put(topicName.toString(), new TopicStatsImpl());
+                        boolean pathExists = namespaceResources().getPartitionedTopicResources()
+                                .partitionedTopicExists(topicName);
+                        if (pathExists) {
+                            stats.partitions.put(topicName.toString(), new TopicStatsImpl());
                         } else {
                             asyncResponse.resume(
                                     new RestException(Status.NOT_FOUND,
@@ -1997,7 +2021,7 @@ public class PersistentTopicsBase extends AdminResource {
             internalCreateSubscriptionForNonPartitionedTopic(asyncResponse,
                     subscriptionName, targetMessageId, authoritative, replicated);
         } else {
-            boolean allowAutoTopicCreation = pulsar().getConfiguration().isAllowAutoTopicCreation();
+            boolean allowAutoTopicCreation = pulsar().getBrokerService().isAllowAutoTopicCreation(topicName);
             getPartitionedTopicMetadataAsync(topicName,
                     authoritative, allowAutoTopicCreation).thenAccept(partitionMetadata -> {
                 final int numPartitions = partitionMetadata.partitions;
@@ -2082,7 +2106,7 @@ public class PersistentTopicsBase extends AdminResource {
             AsyncResponse asyncResponse, String subscriptionName,
             MessageIdImpl targetMessageId, boolean authoritative, boolean replicated) {
 
-        boolean isAllowAutoTopicCreation = pulsar().getConfiguration().isAllowAutoTopicCreation();
+        boolean isAllowAutoTopicCreation = pulsar().getBrokerService().isAllowAutoTopicCreation(topicName);
 
         validateTopicOwnershipAsync(topicName, authoritative)
                 .thenCompose(__ -> {
@@ -2577,7 +2601,7 @@ public class PersistentTopicsBase extends AdminResource {
         // Validate that namespace exists, throw 404 if it doesn't exist
         // note that we do not want to load the topic and hence skip authorization check
         try {
-            namespaceResources().get(path(POLICIES, namespaceName.toString()));
+            namespaceResources().getPolicies(namespaceName);
         } catch (org.apache.pulsar.metadata.api.MetadataStoreException.NotFoundException e) {
             log.warn("[{}] Failed to get topic backlog {}: Namespace does not exist", clientAppId(), namespaceName);
             throw new RestException(Status.NOT_FOUND, "Namespace does not exist");
@@ -2624,18 +2648,63 @@ public class PersistentTopicsBase extends AdminResource {
                 if (applied && quotaMap.isEmpty()) {
                     quotaMap = getNamespacePolicies(namespaceName).backlog_quota_map;
                     if (quotaMap.isEmpty()) {
-                        String namespace = namespaceName.toString();
                         for (BacklogQuota.BacklogQuotaType backlogQuotaType : BacklogQuota.BacklogQuotaType.values()) {
                             quotaMap.put(
                                     backlogQuotaType,
-                                    namespaceBacklogQuota(namespace,
-                                            AdminResource.path(POLICIES, namespace), backlogQuotaType)
+                                    namespaceBacklogQuota(namespaceName, backlogQuotaType)
                             );
                         }
                     }
                 }
                 return quotaMap;
         });
+    }
+
+    protected void internalGetBacklogSizeByMessageId(AsyncResponse asyncResponse,
+                                                     MessageIdImpl messageId, boolean authoritative) {
+        if (topicName.isGlobal()) {
+            try {
+                validateGlobalNamespaceOwnership(namespaceName);
+            } catch (Exception e) {
+                log.error("[{}] Failed to get backlog size for topic {}", clientAppId(), topicName, e);
+                resumeAsyncResponseExceptionally(asyncResponse, e);
+                return;
+            }
+        }
+        PartitionedTopicMetadata partitionMetadata = getPartitionedTopicMetadata(topicName,
+                authoritative, false);
+        if (!topicName.isPartitioned() && partitionMetadata.partitions > 0) {
+            log.warn("[{}] Not supported calculate backlog size operation on partitioned-topic {}",
+                    clientAppId(), topicName);
+            asyncResponse.resume(new RestException(Status.METHOD_NOT_ALLOWED,
+                    "calculate backlog size is not allowed for partitioned-topic"));
+        } else {
+            validateTopicOwnership(topicName, authoritative);
+            validateTopicOperation(topicName, TopicOperation.GET_BACKLOG_SIZE);
+            PersistentTopic topic = (PersistentTopic) getTopicReference(topicName);
+            PositionImpl pos = new PositionImpl(messageId.getLedgerId(), messageId.getEntryId());
+            if (topic == null) {
+                asyncResponse.resume(new RestException(Status.NOT_FOUND, "Topic not found"));
+                return;
+            }
+            try {
+                ManagedLedgerImpl managedLedger = (ManagedLedgerImpl) topic.getManagedLedger();
+                if (messageId.getLedgerId() == -1) {
+                    asyncResponse.resume(managedLedger.getTotalSize());
+                } else {
+                    asyncResponse.resume(managedLedger.getEstimatedBacklogSize(pos));
+                }
+            } catch (WebApplicationException wae) {
+                if (log.isDebugEnabled()) {
+                    log.debug("[{}] Failed to get backlog size for topic {}, redirecting to other brokers.",
+                            clientAppId(), topicName, wae);
+                }
+                resumeAsyncResponseExceptionally(asyncResponse, wae);
+            } catch (Exception e) {
+                log.error("[{}] Failed to get backlog size for topic {}", clientAppId(), topicName, e);
+                resumeAsyncResponseExceptionally(asyncResponse, e);
+            }
+        }
     }
 
     protected CompletableFuture<Void> internalSetBacklogQuota(BacklogQuota.BacklogQuotaType backlogQuotaType,
@@ -3486,7 +3555,10 @@ public class PersistentTopicsBase extends AdminResource {
         } catch (RestException e) {
             throw e;
         } catch (Exception e) {
-            throw new RestException(e);
+            if (e.getCause() instanceof NotAllowedException) {
+                throw new RestException(Status.CONFLICT, e.getCause());
+            }
+            throw new RestException(e.getCause());
         }
     }
 
@@ -3574,24 +3646,39 @@ public class PersistentTopicsBase extends AdminResource {
         }
     }
 
-    private CompletableFuture<Void> updatePartitionedTopic(TopicName topicName, int numPartitions) {
-        final String path = ZkAdminPaths.partitionedTopicPath(topicName);
 
-        CompletableFuture<Void> updatePartition = new CompletableFuture<>();
-        createSubscriptions(topicName, numPartitions).thenAccept(res -> {
-            try {
-                namespaceResources().getPartitionedTopicResources().set(path,
-                        p -> new PartitionedTopicMetadata(numPartitions));
-                updatePartition.complete(null);
-            } catch (Exception e) {
-                updatePartition.completeExceptionally(e);
+    private CompletableFuture<Void> updatePartitionedTopic(TopicName topicName, int numPartitions, boolean force) {
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        createSubscriptions(topicName, numPartitions).thenCompose(__ -> {
+            CompletableFuture<Void> future = namespaceResources().getPartitionedTopicResources()
+                    .updatePartitionedTopicAsync(topicName, p -> new PartitionedTopicMetadata(numPartitions));
+            future.exceptionally(ex -> {
+                // If the update operation fails, clean up the partitions that were created
+                getPartitionedTopicMetadataAsync(topicName, false, false).thenAccept(metadata -> {
+                    int oldPartition = metadata.partitions;
+                    for (int i = oldPartition; i < numPartitions; i++) {
+                        topicResources().deletePersistentTopicAsync(topicName.getPartition(i)).exceptionally(ex1 -> {
+                            log.warn("[{}] Failed to clean up managedLedger {}", clientAppId(), topicName,
+                                    ex1.getCause());
+                            return null;
+                        });
+                    }
+                }).exceptionally(e -> {
+                    log.warn("[{}] Failed to clean up managedLedger", topicName, e);
+                    return null;
+                });
+                return null;
+            });
+            return future;
+        }).thenAccept(__ -> result.complete(null)).exceptionally(ex -> {
+            if (force && ex.getCause() instanceof PulsarAdminException.ConflictException) {
+                result.complete(null);
+                return null;
             }
-        }).exceptionally(ex -> {
-            updatePartition.completeExceptionally(ex);
+            result.completeExceptionally(ex);
             return null;
         });
-
-        return updatePartition;
+        return result;
     }
 
     /**
