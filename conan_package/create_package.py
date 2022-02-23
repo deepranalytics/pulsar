@@ -6,6 +6,7 @@ import subprocess
 g_maturity = "prod"
 # Either (alpha, beta, etc.)
 g_release_type = "stable"
+g_release_version = "2.9.1"
 
 class bcolors:
     HEADER = '\033[95m'
@@ -27,7 +28,7 @@ def printFooter():
         \rGenerate below command from "Set Me Up" tab in {bcolors.OKBLUE}https://deeprdev.jfrog.io{bcolors.ENDC}
         \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} remote add <remote_name> {bcolors.OKBLUE}https://deeprdev.jfrog.io/artifactory/api/conan/deepr-conan{bcolors.ENDC}
         \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} user -p <password> -r <remote_name> <username>
-        \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} upload pulsar/1.0@{g_maturity}/{g_release_type} -r <remote_name> --all --force
+        \r$ {bcolors.OKGREEN}conan{bcolors.ENDC} upload pulsar/{g_release_version}@{g_maturity}/{g_release_type} -r <remote_name> --all --force
         """
     )
 
