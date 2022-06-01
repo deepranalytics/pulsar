@@ -33,6 +33,8 @@ import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -142,24 +144,63 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     @FieldContext(
             category = CATEGORY_WORKER,
             required = false,
+            deprecated = true,
             doc = "Configuration store connection string (as a comma-separated list)"
     )
+    @Deprecated
     private String configurationStoreServers;
     @FieldContext(
             category = CATEGORY_WORKER,
-            doc = "ZooKeeper session timeout in milliseconds"
+            required = false,
+            doc = "Configuration store connection string (as a comma-separated list)"
     )
-    private long zooKeeperSessionTimeoutMillis = 30000;
+    private String configurationMetadataStoreUrl;
+
     @FieldContext(
             category = CATEGORY_WORKER,
-            doc = "ZooKeeper operation timeout in seconds"
+            doc = "Metadata store session timeout in milliseconds."
     )
-    private int zooKeeperOperationTimeoutSeconds = 30;
+    private long metadataStoreSessionTimeoutMillis = 30_000;
+
     @FieldContext(
             category = CATEGORY_WORKER,
-            doc = "ZooKeeper cache expiry time in seconds"
-        )
-    private int zooKeeperCacheExpirySeconds = 300;
+            doc = "Metadata store operation timeout in seconds."
+    )
+    private int metadataStoreOperationTimeoutSeconds = 30;
+
+    @FieldContext(
+            category = CATEGORY_WORKER,
+            doc = "Metadata store cache expiry time in seconds."
+    )
+    private int metadataStoreCacheExpirySeconds = 300;
+
+    @Deprecated
+    @FieldContext(
+            category = CATEGORY_WORKER,
+            deprecated = true,
+            doc = "ZooKeeper session timeout in milliseconds. "
+                    + "@deprecated - Use metadataStoreSessionTimeoutMillis instead."
+    )
+    private long zooKeeperSessionTimeoutMillis = -1;
+
+    @Deprecated
+    @FieldContext(
+            category = CATEGORY_WORKER,
+            deprecated = true,
+            doc = "ZooKeeper operation timeout in seconds. "
+                    + "@deprecated - Use metadataStoreOperationTimeoutSeconds instead."
+    )
+    private int zooKeeperOperationTimeoutSeconds = -1;
+
+    @Deprecated
+    @FieldContext(
+            category = CATEGORY_WORKER,
+            deprecated = true,
+            doc = "ZooKeeper cache expiry time in seconds. "
+                    + "@deprecated - Use metadataStoreCacheExpirySeconds instead."
+    )
+    private int zooKeeperCacheExpirySeconds = -1;
+
     @FieldContext(
         category = CATEGORY_CONNECTORS,
         doc = "The path to the location to locate builtin connectors"
@@ -177,7 +218,12 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     private Boolean validateConnectorConfig = false;
     @FieldContext(
         category = CATEGORY_FUNCTIONS,
-        doc = "The path to the location to locate builtin functions"
+        doc = "Should the builtin sources/sinks be uploaded for the externally managed runtimes?"
+    )
+    private Boolean uploadBuiltinSinksSources = true;
+    @FieldContext(
+            category = CATEGORY_FUNCTIONS,
+            doc = "The path to the location to locate builtin functions"
     )
     private String functionsDirectory = "./functions";
     @FieldContext(
@@ -539,6 +585,11 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     )
     private boolean forwardSourceMessageProperty = true;
 
+    @FieldContext(
+            doc = "Additional arguments to pass to the Java command line for Java functions"
+    )
+    private List<String> additionalJavaRuntimeArguments = new ArrayList<>();
+
     public String getFunctionMetadataTopic() {
         return String.format("persistent://%s/%s", pulsarFunctionsNamespace, functionMetadataTopicName);
     }
@@ -592,9 +643,10 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     }
 
     public byte[] getTlsTrustChainBytes() {
-        if (StringUtils.isNotEmpty(getTlsTrustCertsFilePath()) && Files.exists(Paths.get(getTlsTrustCertsFilePath()))) {
+        if (StringUtils.isNotEmpty(getBrokerClientTrustCertsFilePath())
+                && Files.exists(Paths.get(getBrokerClientTrustCertsFilePath()))) {
             try {
-                return Files.readAllBytes(Paths.get(getTlsTrustCertsFilePath()));
+                return Files.readAllBytes(Paths.get(getBrokerClientTrustCertsFilePath()));
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to read CA bytes", e);
             }
@@ -617,6 +669,14 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
             return InetAddress.getLocalHost().getCanonicalHostName();
         } catch (UnknownHostException ex) {
             throw new IllegalStateException("Failed to resolve localhost name.", ex);
+        }
+    }
+
+    public String getConfigurationMetadataStoreUrl() {
+        if (StringUtils.isNotBlank(configurationMetadataStoreUrl)) {
+            return configurationMetadataStoreUrl;
+        } else  {
+            return configurationStoreServers;
         }
     }
 
@@ -702,5 +762,18 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
         } else {
             return brokerClientAuthenticationParameters;
         }
+    }
+
+    public long getMetadataStoreSessionTimeoutMillis() {
+        return zooKeeperSessionTimeoutMillis > 0 ? zooKeeperSessionTimeoutMillis : metadataStoreSessionTimeoutMillis;
+    }
+
+    public int getMetadataStoreOperationTimeoutSeconds() {
+        return zooKeeperOperationTimeoutSeconds > 0 ? zooKeeperOperationTimeoutSeconds
+                : metadataStoreOperationTimeoutSeconds;
+    }
+
+    public int getMetadataStoreCacheExpirySeconds() {
+        return zooKeeperCacheExpirySeconds > 0 ? zooKeeperCacheExpirySeconds : metadataStoreCacheExpirySeconds;
     }
 }

@@ -19,26 +19,27 @@
 package org.apache.pulsar.client.impl.schema;
 
 import static com.google.common.base.Preconditions.checkArgument;
-
-import java.util.concurrent.CompletableFuture;
-
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.pulsar.client.api.schema.KeyValueSchema;
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SchemaSerializationException;
+import org.apache.pulsar.client.api.schema.KeyValueSchema;
 import org.apache.pulsar.client.api.schema.SchemaInfoProvider;
+import org.apache.pulsar.common.protocol.schema.BytesSchemaVersion;
+import org.apache.pulsar.common.protocol.schema.SchemaVersion;
 import org.apache.pulsar.common.schema.KeyValue;
 import org.apache.pulsar.common.schema.KeyValueEncodingType;
 import org.apache.pulsar.common.schema.SchemaInfo;
 import org.apache.pulsar.common.schema.SchemaType;
 
 /**
- * [Key, Value] pair schema definition
+ * [Key, Value] pair schema definition.
  */
 @Slf4j
-public class KeyValueSchemaImpl<K, V> extends AbstractSchema<KeyValue<K, V>> implements KeyValueSchema<K,V> {
+public class KeyValueSchemaImpl<K, V> extends AbstractSchema<KeyValue<K, V>> implements KeyValueSchema<K, V> {
 
 
     private final Schema<K> keySchema;
@@ -208,6 +209,11 @@ public class KeyValueSchemaImpl<K, V> extends AbstractSchema<KeyValue<K, V>> imp
     public void configureSchemaInfo(String topicName,
                                     String componentName,
                                     SchemaInfo schemaInfo) {
+        if (schemaInfo == null) {
+            log.info("KeyValueSchema starting from null SchemaInfo. "
+                    + "This means that the topic {} still has not a schema", topicName);
+            return;
+        }
         KeyValue<SchemaInfo, SchemaInfo> kvSchemaInfo = KeyValueSchemaInfo.decodeKeyValueSchemaInfo(schemaInfo);
         keySchema.configureSchemaInfo(topicName, "key", kvSchemaInfo.getKey());
         valueSchema.configureSchemaInfo(topicName, "value", kvSchemaInfo.getValue());
@@ -233,6 +239,10 @@ public class KeyValueSchemaImpl<K, V> extends AbstractSchema<KeyValue<K, V>> imp
 
     private void configureKeyValueSchemaInfo() {
         buildKeyValueSchemaInfo();
+        setSchemaInfoProviderOnSubschemas();
+    }
+
+    private void setSchemaInfoProviderOnSubschemas() {
         this.keySchema.setSchemaInfoProvider(new SchemaInfoProvider() {
             @Override
             public CompletableFuture<SchemaInfo> getSchemaByVersion(byte[] schemaVersion) {
@@ -282,8 +292,10 @@ public class KeyValueSchemaImpl<K, V> extends AbstractSchema<KeyValue<K, V>> imp
         if (!supportSchemaVersioning()) {
             return this;
         } else {
-            Schema<?> keySchema = this.keySchema instanceof AbstractSchema ? ((AbstractSchema) this.keySchema).atSchemaVersion(schemaVersion) : this.keySchema;
-            Schema<?> valueSchema = this.valueSchema instanceof AbstractSchema ? ((AbstractSchema) this.valueSchema).atSchemaVersion(schemaVersion) : this.valueSchema;
+            Schema<?> keySchema = this.keySchema instanceof AbstractSchema ? ((AbstractSchema) this.keySchema)
+                    .atSchemaVersion(schemaVersion) : this.keySchema;
+            Schema<?> valueSchema = this.valueSchema instanceof AbstractSchema ? ((AbstractSchema) this.valueSchema)
+                    .atSchemaVersion(schemaVersion) : this.valueSchema;
             return KeyValueSchemaImpl.of(keySchema, valueSchema, keyValueEncodingType);
         }
     }
@@ -317,5 +329,49 @@ public class KeyValueSchemaImpl<K, V> extends AbstractSchema<KeyValue<K, V>> imp
     @Override
     public KeyValueEncodingType getKeyValueEncodingType() {
         return keyValueEncodingType;
+    }
+
+    /**
+     * It may happen that the schema is not loaded but we need it, for instance in order to call getSchemaInfo()
+     * We cannot call this method in getSchemaInfo.
+     * @see AutoConsumeSchema#fetchSchemaIfNeeded(SchemaVersion)
+     */
+    public void fetchSchemaIfNeeded(String topicName, SchemaVersion schemaVersion) throws SchemaSerializationException {
+        if (schemaInfo != null) {
+            if (keySchema instanceof AutoConsumeSchema) {
+                ((AutoConsumeSchema) keySchema).fetchSchemaIfNeeded(schemaVersion);
+            }
+            if (valueSchema instanceof AutoConsumeSchema) {
+                ((AutoConsumeSchema) valueSchema).fetchSchemaIfNeeded(schemaVersion);
+            }
+            return;
+        }
+        setSchemaInfoProviderOnSubschemas();
+        if (schemaVersion == null) {
+            schemaVersion = BytesSchemaVersion.of(new byte[0]);
+        }
+        if (schemaInfoProvider == null) {
+            throw new SchemaSerializationException("Can't get accurate schema information for " + topicName + " "
+                    + "using KeyValueSchemaImpl because SchemaInfoProvider is not set yet");
+        } else {
+            SchemaInfo schemaInfo = null;
+            try {
+                schemaInfo = schemaInfoProvider.getSchemaByVersion(schemaVersion.bytes()).get();
+                if (schemaInfo == null) {
+                    // schemaless topic
+                    schemaInfo = BytesSchema.of().getSchemaInfo();
+                }
+                configureSchemaInfo(topicName, "topic", schemaInfo);
+            } catch (InterruptedException | ExecutionException e) {
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                log.error("Can't get last schema for topic {} using KeyValueSchemaImpl", topicName);
+                throw new SchemaSerializationException(e.getCause());
+            }
+            log.info("Configure schema {} for topic {} : {}",
+                    schemaVersion, topicName, schemaInfo.getSchemaDefinition());
+        }
+
     }
 }

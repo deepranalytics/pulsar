@@ -25,7 +25,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import lombok.AccessLevel;
 import lombok.Data;
@@ -156,8 +155,22 @@ public class JavaInstance implements AutoCloseable {
 
     }
 
+    public void initialize() throws Exception {
+        if (function != null) {
+            function.initialize(context);
+        }
+    }
+
     @Override
     public void close() {
+        if (function != null) {
+            try {
+                function.close();
+            } catch (Exception e) {
+                log.error("function closeResource occurred exception", e);
+            }
+        }
+
         context.close();
         executor.shutdown();
     }

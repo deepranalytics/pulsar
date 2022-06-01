@@ -20,7 +20,6 @@
 package org.apache.pulsar.broker.authentication;
 
 import javax.naming.AuthenticationException;
-
 import org.apache.pulsar.common.api.AuthData;
 
 /**
@@ -53,7 +52,7 @@ public interface AuthenticationState {
     boolean isComplete();
 
     /**
-     * Get AuthenticationState ID
+     * Get AuthenticationState ID.
      */
     default long getStateId() {
         return -1L;

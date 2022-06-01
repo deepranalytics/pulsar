@@ -32,6 +32,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pulsar.common.functions.FunctionDefinition;
 import org.apache.pulsar.common.nar.NarClassLoader;
+import org.apache.pulsar.common.nar.NarClassLoaderBuilder;
 import org.apache.pulsar.common.util.ObjectMapperFactory;
 import org.apache.pulsar.functions.utils.Exceptions;
 import org.apache.pulsar.functions.api.Function;
@@ -72,13 +73,18 @@ public class FunctionUtils {
     }
 
     public static FunctionDefinition getFunctionDefinition(String narPath) throws IOException {
-        try (NarClassLoader ncl = NarClassLoader.getFromArchive(new File(narPath), Collections.emptySet())) {
+        try (NarClassLoader ncl = NarClassLoaderBuilder.builder()
+                .narFile(new File(narPath))
+                .build();) {
             String configStr = ncl.getServiceDefinition(PULSAR_IO_SERVICE_NAME);
             return ObjectMapperFactory.getThreadLocalYaml().readValue(configStr, FunctionDefinition.class);
         }
     }
-
     public static Functions searchForFunctions(String functionsDirectory) throws IOException {
+        return searchForFunctions(functionsDirectory, false);
+    }
+
+    public static Functions searchForFunctions(String functionsDirectory, boolean alwaysPopulatePath) throws IOException {
         Path path = Paths.get(functionsDirectory).toAbsolutePath();
         log.info("Searching for functions in {}", path);
 
@@ -96,7 +102,7 @@ public class FunctionUtils {
                     log.info("Found function {} from {}", cntDef, archive);
                     log.error(cntDef.getName());
                     log.error(cntDef.getFunctionClass());
-                    if (!StringUtils.isEmpty(cntDef.getFunctionClass())) {
+                    if (alwaysPopulatePath || !StringUtils.isEmpty(cntDef.getFunctionClass())) {
                         functions.functions.put(cntDef.getName(), archive);
                     }
 

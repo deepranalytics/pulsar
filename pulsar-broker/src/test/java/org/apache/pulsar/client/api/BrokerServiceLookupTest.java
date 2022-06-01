@@ -610,7 +610,7 @@ public class BrokerServiceLookupTest extends ProducerConsumerBase {
                 .subscribe();
 
         NamespaceBundle bundleInBroker1AfterSplit = pulsar2.getNamespaceService().getBundle(TopicName.get(topic2));
-        assertNotEquals(unsplitBundle, bundleInBroker1AfterSplit);
+        assertNotEquals(unsplitBundle, bundleInBroker1AfterSplit.toString());
 
         consumer1.close();
         consumer2.close();
@@ -654,14 +654,17 @@ public class BrokerServiceLookupTest extends ProducerConsumerBase {
             conf2.setLoadManagerClassName(ModularLoadManagerImpl.class.getName());
             conf2.setZookeeperServers("localhost:2181");
             conf2.setConfigurationStoreServers("localhost:3181");
-
-            @Cleanup
-            PulsarService pulsar2 = startBroker(conf2);
+            conf2.setLoadBalancerAutoBundleSplitEnabled(true);
+            conf2.setLoadBalancerAutoUnloadSplitBundlesEnabled(true);
+            conf2.setLoadBalancerNamespaceBundleMaxTopics(1);
 
             // configure broker-1 with ModularLoadManager
             stopBroker();
             conf.setLoadManagerClassName(ModularLoadManagerImpl.class.getName());
             startBroker();
+
+            @Cleanup
+            PulsarService pulsar2 = startBroker(conf2);
 
             pulsar.getLoadManager().get().writeLoadReportOnZookeeper();
             pulsar2.getLoadManager().get().writeLoadReportOnZookeeper();
@@ -728,13 +731,13 @@ public class BrokerServiceLookupTest extends ProducerConsumerBase {
             // broker-2 loadManager is a leader and let it refresh load-report from all the brokers
             pulsar.getLeaderElectionService().close();
 
+            Awaitility.await()
+                    .untilAsserted(() -> pulsar2.getLeaderElectionService().isLeader());
+
             ModularLoadManagerImpl loadManager = (ModularLoadManagerImpl) ((ModularLoadManagerWrapper) pulsar2
                     .getLoadManager().get()).getLoadManager();
 
             updateAllMethod.invoke(loadManager);
-            conf2.setLoadBalancerAutoBundleSplitEnabled(true);
-            conf2.setLoadBalancerAutoUnloadSplitBundlesEnabled(true);
-            conf2.setLoadBalancerNamespaceBundleMaxTopics(1);
             loadManager.checkNamespaceBundleSplit();
 
             // (6) Broker-2 should get the watch and update bundle cache

@@ -62,6 +62,7 @@ public class PulsarCluster {
     public static final String ADMIN_SCRIPT = "/pulsar/bin/pulsar-admin";
     public static final String CLIENT_SCRIPT = "/pulsar/bin/pulsar-client";
     public static final String PULSAR_COMMAND_SCRIPT = "/pulsar/bin/pulsar";
+    public static final String CURL = "/usr/bin/curl";
 
     /**
      * Pulsar Cluster Spec
@@ -80,6 +81,7 @@ public class PulsarCluster {
         return new PulsarCluster(spec, csContainer, true);
     }
 
+    @Getter
     private final PulsarClusterSpec spec;
 
     @Getter
@@ -157,6 +159,7 @@ public class PulsarCluster {
                         .withEnv("journalMaxGroupWaitMSec", "0")
                         .withEnv("clusterName", clusterName)
                         .withEnv("diskUsageThreshold", "0.99")
+                        .withEnv("nettyMaxFrameSizeBytes", "" + spec.maxMessageSize)
                 )
         );
 
@@ -173,7 +176,8 @@ public class PulsarCluster {
                         .withEnv("brokerServiceCompactionMonitorIntervalInSeconds", "1")
                         // used in s3 tests
                         .withEnv("AWS_ACCESS_KEY_ID", "accesskey")
-                        .withEnv("AWS_SECRET_KEY", "secretkey");
+                        .withEnv("AWS_SECRET_KEY", "secretkey")
+                        .withEnv("maxMessageSize", "" + spec.maxMessageSize);
                     if (spec.queryLastMessage) {
                         brokerContainer.withEnv("bookkeeperExplicitLacIntervalInMills", "10");
                         brokerContainer.withEnv("bookkeeperUseV2WireProtocol", "false");
@@ -431,6 +435,7 @@ public class PulsarCluster {
                 .withEnv("zookeeperServers", ZKContainer.NAME + ":" + ZKContainer.ZK_PORT)
                 .withEnv("pulsar.zookeeper-uri", ZKContainer.NAME + ":" + ZKContainer.ZK_PORT)
                 .withEnv("pulsar.web-service-url", "http://pulsar-broker-0:8080")
+                .withEnv("SQL_PREFIX_pulsar.max-message-size", "" + spec.maxMessageSize)
                 .withClasspathResourceMapping(
                         resourcePath, "/pulsar/conf/presto/config.properties", BindMode.READ_WRITE);
         if (spec.queryLastMessage) {
@@ -521,6 +526,22 @@ public class PulsarCluster {
         log.info("Successfully started {} worker containers.", workerContainers.size());
     }
 
+    public synchronized void stopWorker(String workerName) {
+        if (PULSAR_CONTAINERS_LEAVE_RUNNING) {
+            logIgnoringStopDueToLeaveRunning();
+            return;
+        }
+        // Stop the named worker.
+        WorkerContainer worker = workerContainers.get(workerName);
+        if (worker == null) {
+            log.warn("Failed to find the worker to stop ({})", workerName);
+            return;
+        }
+        worker.stop();
+        workerContainers.remove(workerName);
+        log.info("Worker {} stopped and removed from the map of worker containers", workerName);
+    }
+
     public synchronized void stopWorkers() {
         if (PULSAR_CONTAINERS_LEAVE_RUNNING) {
             logIgnoringStopDueToLeaveRunning();
@@ -573,6 +594,10 @@ public class PulsarCluster {
 
     public synchronized WorkerContainer getWorker(int index) {
         return getAnyContainer(workerContainers, "pulsar-functions-worker", index);
+    }
+
+    public synchronized WorkerContainer getWorker(String workerName) {
+        return workerContainers.get(workerName);
     }
 
     private <T> T getAnyContainer(Map<String, T> containers, String serviceName) {

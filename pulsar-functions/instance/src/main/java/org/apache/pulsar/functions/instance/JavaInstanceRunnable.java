@@ -28,8 +28,6 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
@@ -46,7 +44,6 @@ import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.ClientBuilder;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
-import org.apache.pulsar.client.api.SubscriptionInitialPosition;
 import org.apache.pulsar.client.impl.PulsarClientImpl;
 import org.apache.pulsar.common.functions.ConsumerConfig;
 import org.apache.pulsar.common.functions.FunctionConfig;
@@ -58,7 +55,6 @@ import org.apache.pulsar.functions.api.Function;
 import org.apache.pulsar.functions.api.Record;
 import org.apache.pulsar.functions.api.StateStore;
 import org.apache.pulsar.functions.api.StateStoreContext;
-import org.apache.pulsar.functions.instance.JavaInstance.AsyncFuncRequest;
 import org.apache.pulsar.functions.instance.state.BKStateStoreProviderImpl;
 import org.apache.pulsar.functions.instance.state.InstanceStateManager;
 import org.apache.pulsar.functions.instance.state.StateManager;
@@ -234,7 +230,12 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         setupLogHandler();
 
         javaInstance = new JavaInstance(contextImpl, object, instanceConfig);
-
+        try {
+            Thread.currentThread().setContextClassLoader(functionClassLoader);
+            javaInstance.initialize();
+        } finally {
+            Thread.currentThread().setContextClassLoader(instanceClassLoader);
+        }
         // to signal member variables are initialized
         isInitialized = true;
     }
@@ -458,8 +459,13 @@ public class JavaInstanceRunnable implements AutoCloseable, Runnable {
         }
 
         if (null != javaInstance) {
-            javaInstance.close();
-            javaInstance = null;
+            try {
+                Thread.currentThread().setContextClassLoader(functionClassLoader);
+                javaInstance.close();
+            } finally {
+                Thread.currentThread().setContextClassLoader(instanceClassLoader);
+                javaInstance = null;
+            }
         }
 
         if (null != stateManager) {
