@@ -51,7 +51,11 @@ public class TransactionCoordinatorClientImpl implements TransactionCoordinatorC
 
     private final PulsarClientImpl pulsarClient;
     private TransactionMetaStoreHandler[] handlers;
-    private ConcurrentLongHashMap<TransactionMetaStoreHandler> handlerMap = new ConcurrentLongHashMap<>(16, 1);
+    private ConcurrentLongHashMap<TransactionMetaStoreHandler> handlerMap =
+            ConcurrentLongHashMap.<TransactionMetaStoreHandler>newBuilder()
+                    .expectedItems(16)
+                    .concurrencyLevel(1)
+                    .build();
     private final AtomicLong epoch = new AtomicLong(0);
 
     private static final AtomicReferenceFieldUpdater<TransactionCoordinatorClientImpl, State> STATE_UPDATER =
@@ -89,6 +93,7 @@ public class TransactionCoordinatorClientImpl implements TransactionCoordinatorC
                                     i, pulsarClient, getTCAssignTopicName(i), connectFuture);
                             handlers[i] = handler;
                             handlerMap.put(i, handler);
+                            handler.start();
                         }
                     } else {
                         handlers = new TransactionMetaStoreHandler[1];
@@ -98,6 +103,7 @@ public class TransactionCoordinatorClientImpl implements TransactionCoordinatorC
                                 getTCAssignTopicName(-1), connectFuture);
                         handlers[0] = handler;
                         handlerMap.put(0, handler);
+                        handler.start();
                     }
 
                     STATE_UPDATER.set(TransactionCoordinatorClientImpl.this, State.READY);

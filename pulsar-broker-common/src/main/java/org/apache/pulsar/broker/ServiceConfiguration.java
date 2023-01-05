@@ -181,6 +181,12 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private Optional<Integer> webServicePortTls = Optional.empty();
 
     @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Specify the TLS provider for the web service: SunJSSE, Conscrypt and etc."
+    )
+    private String webServiceTlsProvider = "Conscrypt";
+
+    @FieldContext(
             category = CATEGORY_TLS,
             doc = "Specify the tls protocols the proxy's web service will use to negotiate during TLS Handshake.\n\n"
                     + "Example:- [TLSv1.3, TLSv1.2]"
@@ -305,8 +311,25 @@ public class ServiceConfiguration implements PulsarConfiguration {
             + ".InMemoryDelayedDeliveryTrackerFactory";
 
     @FieldContext(category = CATEGORY_SERVER, doc = "Control the tick time for when retrying on delayed delivery, "
-            + " affecting the accuracy of the delivery time compared to the scheduled time. Default is 1 second.")
+            + "affecting the accuracy of the delivery time compared to the scheduled time. Default is 1 second. "
+            + "Note that this time is used to configure the HashedWheelTimer's tick time for the "
+            + "InMemoryDelayedDeliveryTrackerFactory.")
     private long delayedDeliveryTickTimeMillis = 1000;
+
+    @FieldContext(category = CATEGORY_SERVER, doc = "When using the InMemoryDelayedDeliveryTrackerFactory (the default "
+            + "DelayedDeliverTrackerFactory), whether the deliverAt time is strictly followed. When false (default), "
+            + "messages may be sent to consumers before the deliverAt time by as much as the tickTimeMillis. This can "
+            + "reduce the overhead on the broker of maintaining the delayed index for a potentially very short time "
+            + "period. When true, messages will not be sent to consumer until the deliverAt time has passed, and they "
+            + "may be as late as the deliverAt time plus the tickTimeMillis for the topic plus the "
+            + "delayedDeliveryTickTimeMillis.")
+    private boolean isDelayedDeliveryDeliverAtTimeStrict = false;
+
+    @FieldContext(category = CATEGORY_SERVER, doc = "Size of the lookahead window to use "
+            + "when detecting if all the messages in the topic have a fixed delay. "
+            + "Default is 50,000. Setting the lookahead window to 0 will disable the "
+            + "logic to handle fixed delays in messages in a different way.")
+    private long delayedDeliveryFixedDelayDetectionLookahead = 50_000;
 
     @FieldContext(category = CATEGORY_SERVER, doc = "Whether to enable the acknowledge of batch local index")
     private boolean acknowledgmentAtBatchIndexLevelEnabled = false;
@@ -704,6 +727,14 @@ public class ServiceConfiguration implements PulsarConfiguration {
     private boolean isAllowAutoUpdateSchemaEnabled = true;
 
     @FieldContext(
+            category = CATEGORY_SERVER,
+            doc = "Whether to enable the automatic shrink of pendingAcks map, "
+                    + "the default is false, which means it is not enabled. "
+                    + "When there are a large number of share or key share consumers in the cluster, "
+                    + "it can be enabled to reduce the memory consumption caused by pendingAcks.")
+    private boolean autoShrinkForConsumerPendingAcksMap = false;
+
+    @FieldContext(
         category = CATEGORY_SERVER,
         dynamic = true,
         doc = "Enable check for minimum allowed client library version"
@@ -745,6 +776,10 @@ public class ServiceConfiguration implements PulsarConfiguration {
             + " unacked messages than this percentage limit and subscription will not receive any new messages "
             + " until that subscription acks back `limit/2` messages")
     private double maxUnackedMessagesPerSubscriptionOnBrokerBlocked = 0.16;
+    @FieldContext(
+            category = CATEGORY_POLICIES,
+            doc = "Maximum size of Consumer metadata")
+    private int maxConsumerMetadataSize = 1024;
     @FieldContext(
             category = CATEGORY_POLICIES,
             dynamic = true,
@@ -950,6 +985,13 @@ public class ServiceConfiguration implements PulsarConfiguration {
         doc = "The read failure backoff mandatory stop time in milliseconds. By default it is 0s."
     )
     private int dispatcherReadFailureBackoffMandatoryStopTimeInMs = 0;
+
+    @FieldContext(
+            dynamic = true,
+            category = CATEGORY_SERVER,
+            doc = "Time in milliseconds to delay the new delivery of a message when an EntryFilter returns RESCHEDULE."
+    )
+    private int dispatcherEntryFilterRescheduledMessageDelay = 1000;
 
     @FieldContext(
         dynamic = true,
@@ -1853,6 +1895,11 @@ public class ServiceConfiguration implements PulsarConfiguration {
                     + "If value is invalid or NONE, then save the ManagedLedgerInfo bytes data directly.")
     private String managedLedgerInfoCompressionType = "NONE";
 
+    @FieldContext(category = CATEGORY_STORAGE_ML,
+            doc = "ManagedCursorInfo compression type, option values (NONE, LZ4, ZLIB, ZSTD, SNAPPY). \n"
+                    + "If value is NONE, then save the ManagedCursorInfo bytes data directly.")
+    private String managedCursorInfoCompressionType = "NONE";
+
     /*** --- Load balancer. --- ****/
     @FieldContext(
             category = CATEGORY_LOAD_BALANCER,
@@ -1887,6 +1934,12 @@ public class ServiceConfiguration implements PulsarConfiguration {
         dynamic = true,
         category = CATEGORY_LOAD_BALANCER,
         doc = "maximum interval to update load report"
+    )
+    private int loadBalancerReportUpdateMinIntervalMillis = 5000;
+    @FieldContext(
+            category = CATEGORY_LOAD_BALANCER,
+            dynamic = true,
+            doc = "Min delay of load report to collect, in milli-seconds"
     )
     private int loadBalancerReportUpdateMaxIntervalMinutes = 15;
     @FieldContext(
@@ -2457,6 +2510,27 @@ public class ServiceConfiguration implements PulsarConfiguration {
     )
     private int transactionBufferSnapshotMinTimeInMillis = 5000;
 
+    @FieldContext(
+            category = CATEGORY_TRANSACTION,
+            doc = "The max concurrent requests for transaction buffer client."
+    )
+    private int transactionBufferClientMaxConcurrentRequests = 1000;
+
+    @FieldContext(
+            category = CATEGORY_TRANSACTION,
+            doc = "The transaction buffer client's operation timeout in milliseconds."
+    )
+    private long transactionBufferClientOperationTimeoutInMills = 3000L;
+
+    @FieldContext(
+            category = CATEGORY_TRANSACTION,
+            doc = "MLPendingAckStore maintain a ConcurrentSkipListMap pendingAckLogIndex`,"
+                    + "it store the position in pendingAckStore as value and save a position used to determine"
+                    + "whether the previous data can be cleaned up as a key."
+                    + "transactionPendingAckLogIndexMinLag is used to configure the minimum lag between indexes"
+    )
+    private long transactionPendingAckLogIndexMinLag = 500L;
+
     /**** --- KeyStore TLS config variables. --- ****/
     @FieldContext(
             category = CATEGORY_KEYSTORE_TLS,
@@ -2466,7 +2540,9 @@ public class ServiceConfiguration implements PulsarConfiguration {
 
     @FieldContext(
             category = CATEGORY_KEYSTORE_TLS,
-            doc = "TLS Provider for KeyStore type"
+            doc = "Specify the TLS provider for the broker service: \n"
+                    + "When using TLS authentication with CACert, the valid value is either OPENSSL or JDK.\n"
+                    + "When using TLS authentication with KeyStore, available values can be SunJSSE, Conscrypt and etc."
     )
     private String tlsProvider = null;
 

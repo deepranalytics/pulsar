@@ -40,8 +40,10 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -51,6 +53,8 @@ import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.StreamingOutput;
 import javax.ws.rs.core.UriInfo;
+import lombok.AllArgsConstructor;
+import lombok.Data;
 import org.apache.bookkeeper.conf.ClientConfiguration;
 import org.apache.bookkeeper.mledger.proto.PendingBookieOpsStats;
 import org.apache.pulsar.broker.ServiceConfiguration;
@@ -65,8 +69,10 @@ import org.apache.pulsar.broker.admin.v2.SchemasResource;
 import org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest;
 import org.apache.pulsar.broker.authentication.AuthenticationDataHttps;
 import org.apache.pulsar.broker.loadbalance.LeaderBroker;
+import org.apache.pulsar.broker.namespace.NamespaceService;
 import org.apache.pulsar.broker.web.PulsarWebResource;
 import org.apache.pulsar.broker.web.RestException;
+import org.apache.pulsar.common.api.proto.CommandGetTopicsOfNamespace;
 import org.apache.pulsar.common.conf.InternalConfigurationData;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.TopicName;
@@ -77,6 +83,7 @@ import org.apache.pulsar.common.policies.data.BrokerInfo;
 import org.apache.pulsar.common.policies.data.BundlesData;
 import org.apache.pulsar.common.policies.data.ClusterData;
 import org.apache.pulsar.common.policies.data.ClusterDataImpl;
+import org.apache.pulsar.common.policies.data.ErrorData;
 import org.apache.pulsar.common.policies.data.NamespaceIsolationDataImpl;
 import org.apache.pulsar.common.policies.data.Policies;
 import org.apache.pulsar.common.policies.data.ResourceQuota;
@@ -84,8 +91,12 @@ import org.apache.pulsar.common.policies.data.TenantInfo;
 import org.apache.pulsar.common.policies.data.TenantInfoImpl;
 import org.apache.pulsar.common.stats.AllocatorStats;
 import org.apache.pulsar.common.stats.Metrics;
+import org.apache.pulsar.common.util.ObjectMapperFactory;
+import org.apache.pulsar.functions.worker.WorkerConfig;
 import org.apache.pulsar.metadata.cache.impl.MetadataCacheImpl;
 import org.apache.pulsar.metadata.impl.AbstractMetadataStore;
+import org.apache.pulsar.metadata.impl.MetadataStoreFactoryImpl;
+import org.apache.pulsar.metadata.impl.ZKMetadataStore;
 import org.apache.pulsar.policies.data.loadbalancer.LocalBrokerData;
 import org.apache.zookeeper.KeeperException.Code;
 import org.apache.zookeeper.MockZooKeeper;
@@ -111,6 +122,12 @@ public class AdminTest extends MockedPulsarServiceBaseTest {
 
     public AdminTest() {
         super();
+    }
+
+    @Override
+    protected void doInitConf() throws Exception {
+        super.doInitConf();
+        conf.setMaxTenants(10);
     }
 
     @Override
@@ -192,6 +209,50 @@ public class AdminTest extends MockedPulsarServiceBaseTest {
                 pulsar.getWorkerConfig().map(wc -> wc.getStateStorageServiceUrl()).orElse(null));
 
         assertEquals(brokers.getInternalConfigurationData(), expectedData);
+    }
+
+    @Data
+    @AllArgsConstructor
+    /**
+     * Internal configuration data model before  (before https://github.com/apache/pulsar/pull/14384).
+     */
+    private static class OldInternalConfigurationData {
+        private String zookeeperServers;
+        private String configurationStoreServers;
+        @Deprecated
+        private String ledgersRootPath;
+        private String bookkeeperMetadataServiceUri;
+        private String stateStorageServiceUrl;
+    }
+
+    /**
+     * This test verifies that the model data changes in InternalConfigurationData are retro-compatible.
+     * InternalConfigurationData is downloaded from the Function worker from a broker.
+     * The broker may be still serve an "old" version of InternalConfigurationData
+     * (before https://github.com/apache/pulsar/pull/14384) while the Worker already uses the new one.
+     * @throws Exception
+     */
+    @Test
+    public void internalConfigurationRetroCompatibility() throws Exception {
+        OldInternalConfigurationData oldDataModel = new OldInternalConfigurationData(
+                MetadataStoreFactoryImpl.removeIdentifierFromMetadataURL(conf.getMetadataStoreUrl()),
+                conf.getConfigurationMetadataStoreUrl(),
+                new ClientConfiguration().getZkLedgersRootPath(),
+                conf.isBookkeeperMetadataStoreSeparated() ? conf.getBookkeeperMetadataStoreUrl() : null,
+                pulsar.getWorkerConfig().map(WorkerConfig::getStateStorageServiceUrl).orElse(null));
+
+        final Map<String, Object> oldDataJson = ObjectMapperFactory
+                .getThreadLocal().convertValue(oldDataModel, Map.class);
+
+        final InternalConfigurationData newData = ObjectMapperFactory.getThreadLocal()
+                .convertValue(oldDataJson, InternalConfigurationData.class);
+
+        assertEquals(newData.getMetadataStoreUrl(),
+                ZKMetadataStore.ZK_SCHEME_IDENTIFIER + conf.getMetadataStoreUrl());
+        assertEquals(newData.getConfigurationMetadataStoreUrl(), oldDataModel.getConfigurationStoreServers());
+        assertEquals(newData.getLedgersRootPath(), oldDataModel.getLedgersRootPath());
+        assertEquals(newData.getBookkeeperMetadataServiceUri(), oldDataModel.getBookkeeperMetadataServiceUri());
+        assertEquals(newData.getStateStorageServiceUrl(), oldDataModel.getStateStorageServiceUrl());
     }
 
     @Test
@@ -617,6 +678,33 @@ public class AdminTest extends MockedPulsarServiceBaseTest {
             assertEquals(e.getResponse().getStatus(), Status.PRECONDITION_FAILED.getStatusCode());
         }
 
+        // Check max tenant count
+        int maxTenants = pulsar.getConfiguration().getMaxTenants();
+        List<String> tenants = pulsar.getPulsarResources().getTenantResources().listTenants();
+
+        for(int tenantSize = tenants.size();tenantSize < maxTenants; tenantSize++ ){
+            final int tenantIndex = tenantSize;
+            Response obj = (Response)asynRequests(ctx ->
+                    properties.createTenant(ctx, "test-tenant-" + tenantIndex, tenantInfo));
+            Assert.assertTrue(obj.getStatus() < 400 && obj.getStatus() >= 200);
+        }
+        try {
+            response = asynRequests(ctx ->
+                    properties.createTenant(ctx, "test-tenant-" +  maxTenants, tenantInfo));
+            fail("should have failed");
+        } catch (RestException e) {
+            assertEquals(e.getResponse().getStatus(), Status.PRECONDITION_FAILED.getStatusCode());
+        }
+
+        // Check creating existing property when tenant reach max count.
+        try {
+            response = asynRequests(ctx ->
+                    properties.createTenant(ctx, "test-tenant-" +  (maxTenants-1), tenantInfo));
+            fail("should have failed");
+        } catch (RestException e) {
+            assertEquals(e.getResponse().getStatus(), Status.CONFLICT.getStatusCode());
+        }
+
         AsyncResponse response2 = mock(AsyncResponse.class);
         namespaces.deleteNamespace(response2, "my-tenant", "use", "my-namespace", false, false);
         ArgumentCaptor<Response> captor = ArgumentCaptor.forClass(Response.class);
@@ -781,14 +869,16 @@ public class AdminTest extends MockedPulsarServiceBaseTest {
                 namespace, topic);
         assertEquals(permission.get(role), actions);
         // remove permission
-        persistentTopics.revokePermissionsOnTopic(property, cluster, namespace, topic, role);
-
+        response = mock(AsyncResponse.class);
+        persistentTopics.revokePermissionsOnTopic(response, property, cluster, namespace, topic, role);
+        responseCaptor = ArgumentCaptor.forClass(Response.class);
+        verify(response, timeout(5000).times(1)).resume(responseCaptor.capture());
+        Assert.assertEquals(responseCaptor.getValue().getStatus(), Response.Status.NO_CONTENT.getStatusCode());
         // verify removed permission
         Awaitility.await().untilAsserted(() -> {
             Map<String, Set<AuthAction>> p = persistentTopics.getPermissionsOnTopic(property, cluster, namespace, topic);
             assertTrue(p.isEmpty());
         });
-
     }
 
     @Test
@@ -826,6 +916,28 @@ public class AdminTest extends MockedPulsarServiceBaseTest {
 
         persistentTopics.updatePartitionedTopic(property, cluster, namespace, partitionedTopicName2, false, false,
                 false, 10);
+    }
+
+    @Test
+    public void test500Error() throws Exception {
+        final String property = "prop-xyz";
+        final String cluster = "use";
+        final String namespace = "ns";
+        final String partitionedTopicName = "error-500-topic";
+        AsyncResponse response1 = mock(AsyncResponse.class);
+        ArgumentCaptor<RestException> responseCaptor = ArgumentCaptor.forClass(RestException.class);
+        NamespaceName namespaceName = NamespaceName.get(property, cluster, namespace);
+        NamespaceService ns = spy(pulsar.getNamespaceService());
+        Field namespaceField = pulsar.getClass().getDeclaredField("nsService");
+        namespaceField.setAccessible(true);
+        namespaceField.set(pulsar, ns);
+        CompletableFuture<List<String>> future = new CompletableFuture();
+        future.completeExceptionally(new RuntimeException("500 error contains error message"));
+        doReturn(future).when(ns).getListOfTopics(namespaceName, CommandGetTopicsOfNamespace.Mode.ALL);
+        persistentTopics.createPartitionedTopic(response1, property, cluster, namespace, partitionedTopicName, 5, false);
+        verify(response1, timeout(5000).times(1)).resume(responseCaptor.capture());
+        Assert.assertEquals(responseCaptor.getValue().getResponse().getStatus(), Status.INTERNAL_SERVER_ERROR.getStatusCode());
+        Assert.assertTrue(((ErrorData)responseCaptor.getValue().getResponse().getEntity()).reason.contains("500 error contains error message"));
     }
 
 

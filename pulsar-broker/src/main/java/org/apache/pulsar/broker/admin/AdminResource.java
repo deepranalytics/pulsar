@@ -41,7 +41,6 @@ import org.apache.bookkeeper.mledger.ManagedLedgerException;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.service.BrokerServiceException;
-import org.apache.pulsar.broker.systopic.SystemTopicClient;
 import org.apache.pulsar.broker.web.PulsarWebResource;
 import org.apache.pulsar.broker.web.RestException;
 import org.apache.pulsar.client.admin.PulsarAdminException;
@@ -356,17 +355,21 @@ public abstract class AdminResource extends PulsarWebResource {
     }
 
     protected boolean checkBacklogQuota(BacklogQuota quota, RetentionPolicies retention) {
-        if (retention == null || retention.getRetentionSizeInMB() <= 0 || retention.getRetentionTimeInMinutes() <= 0) {
+        if (retention == null
+                || (retention.getRetentionSizeInMB() <= 0 && retention.getRetentionTimeInMinutes() <= 0)) {
             return true;
         }
         if (quota == null) {
             quota = pulsar().getBrokerService().getBacklogQuotaManager().getDefaultQuota();
         }
-        if (quota.getLimitSize() >= (retention.getRetentionSizeInMB() * 1024 * 1024)) {
+
+        if (retention.getRetentionSizeInMB() > 0
+                && quota.getLimitSize() >= (retention.getRetentionSizeInMB() * 1024 * 1024)) {
             return false;
         }
         // time based quota is in second
-        if (quota.getLimitTime() >= (retention.getRetentionTimeInMinutes() * 60)) {
+        if (retention.getRetentionTimeInMinutes() > 0
+                && quota.getLimitTime() >= retention.getRetentionTimeInMinutes() * 60) {
             return false;
         }
         return true;
@@ -591,12 +594,12 @@ public abstract class AdminResource extends PulsarWebResource {
             }
 
             // new create check
-            if (maxTopicsPerNamespace > 0 && !SystemTopicClient.isSystemTopic(topicName)) {
+            if (maxTopicsPerNamespace > 0 && !pulsar().getBrokerService().isSystemTopic(topicName)) {
                 List<String> partitionedTopics = getTopicPartitionList(TopicDomain.persistent);
                 // exclude created system topic
                 long topicsCount =
-                        partitionedTopics.stream().filter(t -> !SystemTopicClient.isSystemTopic(TopicName.get(t)))
-                                .count();
+                        partitionedTopics.stream().filter(t ->
+                                        !pulsar().getBrokerService().isSystemTopic(TopicName.get(t))).count();
                 if (topicsCount + numPartitions > maxTopicsPerNamespace) {
                     log.error("[{}] Failed to create partitioned topic {}, "
                             + "exceed maximum number of topics in namespace", clientAppId(), topicName);
@@ -837,7 +840,7 @@ public abstract class AdminResource extends PulsarWebResource {
         checkArgument(
                 (persistence.getBookkeeperEnsemble() >= persistence.getBookkeeperWriteQuorum())
                         && (persistence.getBookkeeperWriteQuorum() >= persistence.getBookkeeperAckQuorum()),
-                String.format("Bookkeeper Ensemble (%s) >= WriteQuorum (%s) >= AckQuoru (%s)",
+                String.format("Bookkeeper Ensemble (%s) >= WriteQuorum (%s) >= AckQuorum (%s)",
                         persistence.getBookkeeperEnsemble(), persistence.getBookkeeperWriteQuorum(),
                         persistence.getBookkeeperAckQuorum()));
 
@@ -854,5 +857,9 @@ public abstract class AdminResource extends PulsarWebResource {
         return realCause instanceof WebApplicationException
                 && ((WebApplicationException) realCause).getResponse().getStatus()
                 == Status.TEMPORARY_REDIRECT.getStatusCode();
+    }
+
+    protected static String getTopicNotFoundErrorMessage(String topic) {
+        return String.format("Topic %s not found", topic);
     }
 }

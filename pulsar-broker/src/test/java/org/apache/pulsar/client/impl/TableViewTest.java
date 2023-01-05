@@ -18,6 +18,9 @@
  */
 package org.apache.pulsar.client.impl;
 
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.fail;
+
 import com.google.common.collect.Sets;
 import java.time.Duration;
 import java.util.HashSet;
@@ -116,18 +119,37 @@ public class TableViewTest extends MockedPulsarServiceBaseTest {
         tv.forEachAndListen((k, v) -> log.info("{} -> {}", k, new String(v)));
         Awaitility.await().untilAsserted(() -> {
             log.info("Current tv size: {}", tv.size());
-            Assert.assertEquals(tv.size(), count);
+            assertEquals(tv.size(), count);
         });
-        Assert.assertEquals(tv.keySet(), keys);
+        assertEquals(tv.keySet(), keys);
         tv.forEachAndListen((k, v) -> log.info("checkpoint {} -> {}", k, new String(v)));
 
         // Send more data
         Set<String> keys2 = this.publishMessages(topic, count * 2, false);
         Awaitility.await().untilAsserted(() -> {
             log.info("Current tv size: {}", tv.size());
-            Assert.assertEquals(tv.size(), count * 2);
+            assertEquals(tv.size(), count * 2);
         });
-        Assert.assertEquals(tv.keySet(), keys2);
+        assertEquals(tv.keySet(), keys2);
+        // Test collection
+        try {
+            tv.keySet().clear();
+            fail("Should fail here");
+        } catch (Exception ex) {
+            Assert.assertTrue(ex instanceof UnsupportedOperationException);
+        }
+        try {
+            tv.entrySet().clear();
+            fail("Should fail here");
+        } catch (Exception ex) {
+            Assert.assertTrue(ex instanceof UnsupportedOperationException);
+        }
+        try {
+            tv.values().clear();
+            fail("Should fail here");
+        } catch (Exception ex) {
+            Assert.assertTrue(ex instanceof UnsupportedOperationException);
+        }
     }
 
     @Test(timeOut = 30 * 1000)
@@ -145,9 +167,9 @@ public class TableViewTest extends MockedPulsarServiceBaseTest {
         tv.forEachAndListen((k, v) -> log.info("{} -> {}", k, new String(v)));
         Awaitility.await().untilAsserted(() -> {
             log.info("Current tv size: {}", tv.size());
-            Assert.assertEquals(tv.size(), count);
+            assertEquals(tv.size(), count);
         });
-        Assert.assertEquals(tv.keySet(), keys);
+        assertEquals(tv.keySet(), keys);
         tv.forEachAndListen((k, v) -> log.info("checkpoint {} -> {}", k, new String(v)));
 
         admin.topics().updatePartitionedTopic(topic, 4);
@@ -158,11 +180,47 @@ public class TableViewTest extends MockedPulsarServiceBaseTest {
                 this.publishMessages(topicName.getPartition(3).toString(), count * 2, false);
         Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
             log.info("Current tv size: {}", tv.size());
-            Assert.assertEquals(tv.size(), count * 2);
+            assertEquals(tv.size(), count * 2);
         });
-        Assert.assertEquals(tv.keySet(), keys2);
+        assertEquals(tv.keySet(), keys2);
     }
 
+    @Test(timeOut = 30 * 1000)
+    public void testPublishNullValue() throws Exception {
+        String topic = "persistent://public/default/tableview-test-publish-null-value";
+        admin.topics().createPartitionedTopic(topic, 3);
+
+        final TableView<String> tv = pulsarClient.newTableViewBuilder(Schema.STRING)
+                .topic(topic)
+                .autoUpdatePartitionsInterval(5, TimeUnit.SECONDS)
+                .create();
+        @Cleanup
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING).topic(topic).create();
+
+        producer.newMessage().key("key1").value("value1").send();
+
+        Awaitility.await().untilAsserted(() -> assertEquals(tv.get("key1"), "value1"));
+        assertEquals(tv.size(), 1);
+
+        // Try to remove key1 by publishing the tombstones message.
+        producer.newMessage().key("key1").value(null).send();
+        Awaitility.await().untilAsserted(() -> assertEquals(tv.size(), 0));
+
+        producer.newMessage().key("key2").value("value2").send();
+        Awaitility.await().untilAsserted(() -> assertEquals(tv.get("key2"), "value2"));
+        assertEquals(tv.size(), 1);
+
+        tv.close();
+
+        @Cleanup
+        TableView<String> tv1 = pulsarClient.newTableViewBuilder(Schema.STRING)
+                .topic(topic)
+                .autoUpdatePartitionsInterval(5, TimeUnit.SECONDS)
+                .create();
+
+        assertEquals(tv1.size(), 1);
+        assertEquals(tv.get("key2"), "value2");
+    }
 
     @Test(timeOut = 30 * 1000)
     // Regression test for making sure partition changes are always periodically checked even after a check returned

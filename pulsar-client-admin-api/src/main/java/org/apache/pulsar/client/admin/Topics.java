@@ -664,6 +664,22 @@ public interface Topics {
     CompletableFuture<PartitionedTopicMetadata> getPartitionedTopicMetadataAsync(String topic);
 
     /**
+     * Get properties of a topic.
+     * @param topic
+     *            Topic name
+     * @return Topic properties
+     */
+    Map<String, String> getProperties(String topic) throws PulsarAdminException;
+
+    /**
+     * Get properties of a topic asynchronously.
+     * @param topic
+     *            Topic name
+     * @return a future that can be used to track when the topic properties is returned
+     */
+    CompletableFuture<Map<String, String>> getPropertiesAsync(String topic);
+
+    /**
      * Delete a partitioned topic.
      * <p/>
      * It will also delete all the partitions of the topic if it exists.
@@ -1595,7 +1611,78 @@ public interface Topics {
      * @throws PulsarAdminException
      *             Unexpected error
      */
-    void createSubscription(String topic, String subscriptionName, MessageId messageId)
+    default void createSubscription(String topic, String subscriptionName, MessageId messageId)
+            throws PulsarAdminException {
+        createSubscription(topic, subscriptionName, messageId, false);
+    };
+
+    /**
+     * Create a new subscription on a topic.
+     *
+     * @param topic
+     *            topic name
+     * @param subscriptionName
+     *            Subscription name
+     * @param messageId
+     *            The {@link MessageId} on where to initialize the subscription. It could be {@link MessageId#latest},
+     *            {@link MessageId#earliest} or a specific message id.
+     */
+    default CompletableFuture<Void> createSubscriptionAsync(String topic, String subscriptionName,
+                                                            MessageId messageId) {
+        return createSubscriptionAsync(topic, subscriptionName, messageId, false);
+    }
+
+    /**
+     * Create a new subscription on a topic.
+     *
+     * @param topic
+     *            topic name
+     * @param subscriptionName
+     *            Subscription name
+     * @param messageId
+     *            The {@link MessageId} on where to initialize the subscription. It could be {@link MessageId#latest},
+     *            {@link MessageId#earliest} or a specific message id.
+     * @param replicated
+     *            replicated subscriptions.
+     * @throws NotAuthorizedException
+     *             Don't have admin permission
+     * @throws ConflictException
+     *             Subscription already exists
+     * @throws NotAllowedException
+     *             Command disallowed for requested resource
+     * @throws PulsarAdminException
+     *             Unexpected error
+     */
+    default void createSubscription(String topic, String subscriptionName, MessageId messageId, boolean replicated)
+            throws PulsarAdminException {
+        createSubscription(topic, subscriptionName, messageId, replicated, null);
+    }
+
+    /**
+     * Create a new subscription on a topic.
+     *
+     * @param topic
+     *            topic name
+     * @param subscriptionName
+     *            Subscription name
+     * @param messageId
+     *            The {@link MessageId} on where to initialize the subscription. It could be {@link MessageId#latest},
+     *            {@link MessageId#earliest} or a specific message id.
+     * @param replicated
+     *            replicated subscriptions.
+     * @param properties
+     *            subscription properties.
+     * @throws NotAuthorizedException
+     *             Don't have admin permission
+     * @throws ConflictException
+     *             Subscription already exists
+     * @throws NotAllowedException
+     *             Command disallowed for requested resource
+     * @throws PulsarAdminException
+     *             Unexpected error
+     */
+    void createSubscription(String topic, String subscriptionName, MessageId messageId, boolean replicated,
+                            Map<String, String> properties)
             throws PulsarAdminException;
 
     /**
@@ -1609,7 +1696,29 @@ public interface Topics {
      *            The {@link MessageId} on where to initialize the subscription. It could be {@link MessageId#latest},
      *            {@link MessageId#earliest} or a specific message id.
      */
-    CompletableFuture<Void> createSubscriptionAsync(String topic, String subscriptionName, MessageId messageId);
+    default CompletableFuture<Void> createSubscriptionAsync(String topic, String subscriptionName, MessageId messageId,
+                                                    boolean replicated) {
+        return createSubscriptionAsync(topic, subscriptionName, messageId, replicated, null);
+    }
+
+    /**
+     * Create a new subscription on a topic.
+     *
+     * @param topic
+     *            topic name
+     * @param subscriptionName
+     *            Subscription name
+     * @param messageId
+     *            The {@link MessageId} on where to initialize the subscription. It could be {@link MessageId#latest},
+     *            {@link MessageId#earliest} or a specific message id.
+     *
+     * @param replicated
+     *           replicated subscriptions.
+     * @param properties
+     *            subscription properties.
+     */
+    CompletableFuture<Void> createSubscriptionAsync(String topic, String subscriptionName, MessageId messageId,
+                                                    boolean replicated, Map<String, String> properties);
 
     /**
      * Reset cursor position on a topic subscription.
@@ -1645,6 +1754,17 @@ public interface Topics {
     void resetCursor(String topic, String subName, MessageId messageId, boolean isExcluded) throws PulsarAdminException;
 
     /**
+     * Update Subscription Properties on a topic subscription.
+     * The new properties will override the existing values, properties that are not passed will be removed.
+     * @param topic
+     * @param subName
+     * @param subscriptionProperties
+     * @throws PulsarAdminException
+     */
+    void updateSubscriptionProperties(String topic, String subName, Map<String, String> subscriptionProperties)
+            throws PulsarAdminException;
+
+    /**
      * Reset cursor position on a topic subscription.
      *
      * @param topic
@@ -1667,6 +1787,16 @@ public interface Topics {
      * @return
      */
     CompletableFuture<Void> resetCursorAsync(String topic, String subName, MessageId messageId, boolean isExcluded);
+
+    /**
+     * Update Subscription Properties on a topic subscription.
+     * The new properties will override the existing values, properties that are not passed will be removed.
+     * @param topic
+     * @param subName
+     * @param subscriptionProperties
+     */
+    CompletableFuture<Void>  updateSubscriptionPropertiesAsync(String topic, String subName,
+                                                               Map<String, String> subscriptionProperties);
 
     /**
      * Reset cursor position on a topic subscription.

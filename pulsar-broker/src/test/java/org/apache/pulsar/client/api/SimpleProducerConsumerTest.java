@@ -58,6 +58,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutionException;
@@ -145,6 +146,16 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
     @DataProvider(name = "ackReceiptEnabled")
     public Object[][] ackReceiptEnabled() {
         return new Object[][] { { true }, { false } };
+    }
+
+    @DataProvider(name = "ackReceiptEnabledAndSubscriptionTypes")
+    public Object[][] ackReceiptEnabledAndSubscriptionTypes() {
+        return new Object[][] {
+                {true, SubscriptionType.Shared},
+                {true, SubscriptionType.Key_Shared},
+                {false, SubscriptionType.Shared},
+                {false, SubscriptionType.Key_Shared},
+        };
     }
 
     @AfterMethod(alwaysRun = true)
@@ -818,10 +829,11 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
 
     // This is to test that the flow control counter doesn't get corrupted while concurrent receives during
     // reconnections
-    @Test(dataProvider = "batch", groups = "quarantine")
+    @Test(timeOut = 100_000, dataProvider = "batch", groups = "quarantine")
     public void testConcurrentConsumerReceiveWhileReconnect(int batchMessageDelayMs) throws Exception {
         final int recvQueueSize = 100;
         final int numConsumersThreads = 10;
+        final int receiveTimeoutSeconds = 100;
 
         String subName = UUID.randomUUID().toString();
         final Consumer<byte[]> consumer = pulsarClient.newConsumer()
@@ -835,12 +847,11 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         for (int i = 0; i < numConsumersThreads; i++) {
             executor.submit((Callable<Void>) () -> {
                 barrier.await();
-                consumer.receive(RECEIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                consumer.receive(receiveTimeoutSeconds, TimeUnit.SECONDS);
                 return null;
             });
         }
-
-        barrier.await();
+        barrier.await(); // the last thread reach barrier, start consume messages
 
         // we restart the broker to reconnect
         restartBroker();
@@ -876,7 +887,7 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
                 return null;
             });
         }
-        barrier.await();
+        barrier.await(); // the last thread reach barrier, start consume messages
 
         Awaitility.await().untilAsserted(() -> {
             // The available permits should be 20 and num messages in the queue should be 80
@@ -906,7 +917,7 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
                 return null;
             });
         }
-        barrier.await();
+        barrier.await(); // the last thread reach barrier, start consume messages
 
         restartBroker();
 
@@ -1586,6 +1597,47 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
             fail();
         } finally {
             pulsar.getConfiguration().setMaxUnackedMessagesPerConsumer(unAckedMessages);
+        }
+    }
+
+    @Test(dataProvider = "ackReceiptEnabledAndSubscriptionTypes")
+    public void testMaxUnAckMessagesLowerThanPermits(boolean ackReceiptEnabled, SubscriptionType subType)
+            throws PulsarClientException {
+        final int maxUnacks = 10;
+        pulsar.getConfiguration().setMaxUnackedMessagesPerConsumer(maxUnacks);
+        final String topic = "persistent://my-property/my-ns/testMaxUnAckMessagesLowerThanPermits";
+
+        @Cleanup
+        Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
+                .topic(topic).subscriptionName("sub")
+                .subscriptionType(subType)
+                .isAckReceiptEnabled(ackReceiptEnabled)
+                .acknowledgmentGroupTime(0, TimeUnit.SECONDS)
+                .subscribe();
+
+        @Cleanup
+        Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+                .enableBatching(false)
+                .topic(topic)
+                .create();
+
+        final int messages = 1000;
+        for (int i = 0; i < messages; i++) {
+            producer.sendAsync("Message - " + i);
+        }
+        producer.flush();
+        List<MessageId> receives = new ArrayList<>();
+        for (int i = 0; i < maxUnacks; i++) {
+            Message<String> received =  consumer.receive();
+            log.info("Received message {} with message ID {}", received.getValue(), received.getMessageId());
+            receives.add(received.getMessageId());
+        }
+        assertNull(consumer.receive(3, TimeUnit.SECONDS));
+        consumer.acknowledge(receives);
+        for (int i = 0; i < messages - maxUnacks; i++) {
+            Message<String> received =  consumer.receive();
+            log.info("Received message {} with message ID {}", received.getValue(), received.getMessageId());
+            consumer.acknowledge(received);
         }
     }
 
@@ -2423,9 +2475,9 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         Producer<byte[]> producer = pulsarClient.newProducer().topic("persistent://my-property/my-ns/unacked-topic")
                 .create();
 
-        // (1) First round to produce-consume messages
+        // (1) send all message at once
         int consumeMsgInParts = 4;
-        for (int i = 0; i < receiverQueueSize; i++) {
+        for (int i = 0; i < receiverQueueSize * 2; i++) {
             String message = "my-message-" + i;
             producer.send(message.getBytes());
         }
@@ -2434,7 +2486,7 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         Message<byte[]> msg;
         List<Message<byte[]>> messages1 = Lists.newArrayList();
         for (int i = 0; i < consumeMsgInParts; i++) {
-            msg = consumer.receive(RECEIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            msg = consumer.receive();
             if (msg != null) {
                 messages1.add(msg);
                 consumer.acknowledge(msg);
@@ -2450,7 +2502,7 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         // (1.b) consume second consumeMsgInParts msgs and trigger redeliver
         messages1.clear();
         for (int i = 0; i < consumeMsgInParts; i++) {
-            msg = consumer.receive(RECEIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            msg = consumer.receive();
             if (msg != null) {
                 messages1.add(msg);
                 consumer.acknowledge(msg);
@@ -2463,17 +2515,10 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         consumer.redeliverUnacknowledgedMessages();
         Thread.sleep(1000L);
 
-        // (2) Second round to produce-consume messages
-        for (int i = 0; i < receiverQueueSize; i++) {
-            String message = "my-message-" + i;
-            producer.send(message.getBytes());
-        }
-        producer.flush();
-
         int remainingMsgs = (2 * receiverQueueSize) - (2 * consumeMsgInParts);
         messages1.clear();
         for (int i = 0; i < remainingMsgs; i++) {
-            msg = consumer.receive(RECEIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            msg = consumer.receive();
             if (msg != null) {
                 messages1.add(msg);
                 consumer.acknowledge(msg);
@@ -4399,5 +4444,34 @@ public class SimpleProducerConsumerTest extends ProducerConsumerBase {
         });
 
         log.info("-- Exiting {} test --", methodName);
+    }
+
+    @Test(invocationCount = 5)
+    public void testListenerOrdering() throws Exception {
+        final String topic = "persistent://my-property/my-ns/test-listener-ordering-" + System.currentTimeMillis();
+        final int numMessages = 1000;
+        final CountDownLatch latch = new CountDownLatch(numMessages);
+        final List<String> values = new CopyOnWriteArrayList<>();
+        final Consumer<String> consumer = pulsarClient.newConsumer(Schema.STRING)
+                .topic(topic)
+                .subscriptionName("sub")
+                .messageListener((MessageListener<String>) (consumer1, msg) -> {
+                    values.add(msg.getValue());
+                    latch.countDown();
+                })
+                .subscribe();
+        final Producer<String> producer = pulsarClient.newProducer(Schema.STRING)
+                .topic(topic)
+                .create();
+        for (int i = 0; i < numMessages; i++) {
+            producer.send("msg-" + i);
+        }
+        latch.await(3, TimeUnit.SECONDS);
+        producer.close();
+        consumer.close();
+        assertEquals(values.size(), numMessages);
+        for (int i = 0; i < numMessages; i++) {
+            assertEquals(values.get(i), "msg-" + i);
+        }
     }
 }

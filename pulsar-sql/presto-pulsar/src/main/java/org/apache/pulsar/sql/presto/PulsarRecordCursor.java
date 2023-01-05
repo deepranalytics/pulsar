@@ -120,7 +120,8 @@ public class PulsarRecordCursor implements RecordCursor {
 
     PulsarDispatchingRowDecoderFactory decoderFactory;
 
-    protected ConcurrentOpenHashMap<String, ChunkedMessageCtx> chunkedMessagesMap = new ConcurrentOpenHashMap<>();
+    protected ConcurrentOpenHashMap<String, ChunkedMessageCtx> chunkedMessagesMap =
+            ConcurrentOpenHashMap.<String, ChunkedMessageCtx>newBuilder().build();
 
     private static final Logger log = Logger.get(PulsarRecordCursor.class);
 
@@ -725,18 +726,16 @@ public class PulsarRecordCursor implements RecordCursor {
     public void close() {
         log.info("Closing cursor record");
 
-        if (currentMessage != null) {
-            currentMessage.release();
-        }
-
-        if (messageQueue != null) {
-            messageQueue.drain(RawMessage::release);
-        }
-
         if (deserializeEntries != null) {
             deserializeEntries.close().whenComplete((r, t) -> {
                 if (entryQueue != null) {
                     entryQueue.drain(Entry::release);
+                }
+                if (messageQueue != null) {
+                    messageQueue.drain(RawMessage::release);
+                }
+                if (currentMessage != null) {
+                    currentMessage.release();
                 }
             });
         }

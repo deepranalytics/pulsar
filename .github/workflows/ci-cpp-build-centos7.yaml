@@ -21,17 +21,11 @@ name: CI - CPP build on CentOS 7
 on:
   pull_request:
     branches:
-      - master
       - branch-*
     paths:
       - '.github/workflows/**'
       - 'pulsar-client-cpp/**'
-  push:
-    branches:
-      - branch-*
-    paths:
-      - '.github/workflows/**'
-      - 'pulsar-client-cpp/**'
+
 jobs:
 
   cpp-build-centos7:

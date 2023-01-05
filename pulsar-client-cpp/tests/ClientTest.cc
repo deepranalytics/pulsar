@@ -24,6 +24,9 @@
 #include <future>
 #include <pulsar/Client.h>
 #include "../lib/checksum/ChecksumProvider.h"
+#include "lib/LogUtils.h"
+
+DECLARE_LOG_OBJECT()
 
 using namespace pulsar;
 
@@ -197,22 +200,84 @@ TEST(ClientTest, testReferenceCount) {
 
     auto &producers = PulsarFriend::getProducers(client);
     auto &consumers = PulsarFriend::getConsumers(client);
+    ReaderImplWeakPtr readerWeakPtr;
 
     {
         Producer producer;
         ASSERT_EQ(ResultOk, client.createProducer(topic, producer));
         ASSERT_EQ(producers.size(), 1);
-        ASSERT_EQ(producers[0].use_count(), 1);
+        ASSERT_TRUE(producers[0].use_count() > 0);
+        LOG_INFO("Reference count of the producer: " << producers[0].use_count());
 
         Consumer consumer;
         ASSERT_EQ(ResultOk, client.subscribe(topic, "my-sub", consumer));
         ASSERT_EQ(consumers.size(), 1);
-        ASSERT_EQ(consumers[0].use_count(), 1);
+        ASSERT_TRUE(consumers[0].use_count() > 0);
+        LOG_INFO("Reference count of the consumer: " << consumers[0].use_count());
+
+        ReaderConfiguration readerConf;
+        Reader reader;
+        ASSERT_EQ(ResultOk,
+                  client.createReader(topic + "-reader", MessageId::earliest(), readerConf, reader));
+        ASSERT_EQ(consumers.size(), 2);
+        ASSERT_TRUE(consumers[1].use_count() > 0);
+        LOG_INFO("Reference count of the reader's underlying consumer: " << consumers[1].use_count());
+
+        readerWeakPtr = PulsarFriend::getReaderImplWeakPtr(reader);
+        ASSERT_TRUE(readerWeakPtr.use_count() > 0);
+        LOG_INFO("Reference count of the reader: " << readerWeakPtr.use_count());
     }
 
     ASSERT_EQ(producers.size(), 1);
     ASSERT_EQ(producers[0].use_count(), 0);
-    ASSERT_EQ(consumers.size(), 1);
+    ASSERT_EQ(consumers.size(), 2);
     ASSERT_EQ(consumers[0].use_count(), 0);
+    ASSERT_EQ(consumers[1].use_count(), 0);
+    ASSERT_EQ(readerWeakPtr.use_count(), 0);
     client.close();
+}
+
+TEST(ClientTest, testWrongListener) {
+    const std::string topic = "client-test-wrong-listener-" + std::to_string(time(nullptr));
+    auto httpCode = makePutRequest(
+        "http://localhost:8080/admin/v2/persistent/public/default/" + topic + "/partitions", "3");
+    LOG_INFO("create " << topic << ": " << httpCode);
+
+    Client client(lookupUrl, ClientConfiguration().setListenerName("test"));
+    Producer producer;
+    ASSERT_EQ(ResultServiceUnitNotReady, client.createProducer(topic, producer));
+    ASSERT_EQ(ResultProducerNotInitialized, producer.close());
+    ASSERT_EQ(PulsarFriend::getProducers(client).size(), 0);
+    ASSERT_EQ(ResultOk, client.close());
+
+    // The connection will be closed when the consumer failed, we must recreate the Client. Otherwise, the
+    // creation of Consumer or Reader could fail with ResultConnectError.
+    client = Client(lookupUrl, ClientConfiguration().setListenerName("test"));
+    Consumer consumer;
+    ASSERT_EQ(ResultServiceUnitNotReady, client.subscribe(topic, "sub", consumer));
+    ASSERT_EQ(ResultConsumerNotInitialized, consumer.close());
+
+    ASSERT_EQ(PulsarFriend::getConsumers(client).size(), 0);
+    ASSERT_EQ(ResultOk, client.close());
+
+    client = Client(lookupUrl, ClientConfiguration().setListenerName("test"));
+
+    Consumer multiTopicsConsumer;
+    ASSERT_EQ(ResultServiceUnitNotReady,
+              client.subscribe({topic + "-partition-0", topic + "-partition-1", topic + "-partition-2"},
+                               "sub", multiTopicsConsumer));
+
+    ASSERT_EQ(PulsarFriend::getConsumers(client).size(), 0);
+    ASSERT_EQ(ResultOk, client.close());
+
+    // Currently Reader can only read a non-partitioned topic in C++ client
+    client = Client(lookupUrl, ClientConfiguration().setListenerName("test"));
+
+    // Currently Reader can only read a non-partitioned topic in C++ client
+    Reader reader;
+    ASSERT_EQ(ResultServiceUnitNotReady,
+              client.createReader(topic + "-partition-0", MessageId::earliest(), {}, reader));
+    ASSERT_EQ(ResultConsumerNotInitialized, reader.close());
+    ASSERT_EQ(PulsarFriend::getConsumers(client).size(), 0);
+    ASSERT_EQ(ResultOk, client.close());
 }

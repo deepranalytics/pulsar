@@ -42,7 +42,7 @@ function broker_group_1() {
 }
 
 function broker_group_2() {
-  $MVN_TEST_COMMAND -pl pulsar-broker -Dgroups='schema,utils,functions-worker,broker-io,broker-discovery,broker-compaction,broker-naming,websocket,other'
+  $MVN_TEST_COMMAND -pl pulsar-broker -Dgroups='schema,utils,functions-worker,broker-io,broker-discovery,broker-compaction,broker-naming,websocket,other' -DtestReuseFork=false
 }
 
 function broker_group_3() {
@@ -117,7 +117,7 @@ function other() {
                                                 **/ManagedLedgerTest.java,
                                                 **/TestPulsarKeyValueSchemaHandler.java,
                                                 **/PrimitiveSchemaTest.java,
-                                                BlobStoreManagedLedgerOffloaderTest.java'
+                                                BlobStoreManagedLedgerOffloaderTest.java' -DtestReuseFork=false
 
   $MVN_TEST_COMMAND -pl managed-ledger -Dinclude='**/ManagedLedgerTest.java,
                                                   **/OffloadersCacheTest.java'

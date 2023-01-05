@@ -227,23 +227,18 @@ public class LinuxBrokerHostUsageImpl implements BrokerHostUsage {
     }
 
     private boolean isPhysicalNic(Path path) {
-        if (!path.toString().contains("/virtual/")) {
-            try {
-                Files.readAllBytes(path.resolve("speed"));
-                return true;
-            } catch (Exception e) {
-                // In some cases, VMs in EC2 won't have the speed reported on the NIC and will give a read-error.
-                // Check the type to make sure it's ethernet (type "1")
-                try {
-                    String type = new String(Files.readAllBytes(path.resolve("type")), StandardCharsets.UTF_8).trim();
-                    return Integer.parseInt(type) == 1;
-                } catch (IOException ioe) {
-                    // wireless nics don't report speed, ignore them.
-                    return false;
-                }
+        try {
+            if (path.toRealPath().toString().contains("/virtual/")) {
+                return false;
             }
+            // Check the type to make sure it's ethernet (type "1")
+            String type = new String(Files.readAllBytes(path.resolve("type")), StandardCharsets.UTF_8).trim();
+            // wireless NICs don't report speed, ignore them.
+            return Integer.parseInt(type) == 1;
+        } catch (Exception e) {
+            // Read type got error.
+            return false;
         }
-        return false;
     }
 
     private Path getNicSpeedPath(String nic) {
@@ -253,16 +248,17 @@ public class LinuxBrokerHostUsageImpl implements BrokerHostUsage {
     private double getTotalNicLimitKbps(List<String> nics) {
         // Use the override value as configured. Return the total max speed across all available NICs, converted
         // from Gbps into Kbps
-        return overrideBrokerNicSpeedGbps.map(aDouble -> aDouble * nics.size() * 1024 * 1024)
-                .orElseGet(() -> nics.stream().mapToDouble(s -> {
+        return overrideBrokerNicSpeedGbps.map(aDouble -> aDouble * nics.size() * 1000 * 1000)
+                .orElseGet(() -> nics.stream().mapToDouble(nicPath -> {
                     // Nic speed is in Mbits/s, return kbits/s
                     try {
-                        return Double.parseDouble(new String(Files.readAllBytes(getNicSpeedPath(s))));
+                        return Double.parseDouble(new String(Files.readAllBytes(getNicSpeedPath(nicPath))));
                     } catch (IOException e) {
-                        log.error("Failed to read speed for nic " + s, e);
+                        log.error(String.format("Failed to read speed for nic %s, maybe you can set broker"
+                                + " config [loadBalancerOverrideBrokerNicSpeedGbps] to override it.", nicPath), e);
                         return 0d;
                     }
-                }).sum() * 1024);
+                }).sum() * 1000);
     }
 
     private Path getNicTxPath(String nic) {
@@ -281,7 +277,7 @@ public class LinuxBrokerHostUsageImpl implements BrokerHostUsage {
                 log.error("Failed to read rx_bytes for NIC " + s, e);
                 return 0d;
             }
-        }).sum() * 8 / 1024;
+        }).sum() * 8d / 1000;
     }
 
     private double getTotalNicUsageTxKb(List<String> nics) {
@@ -292,7 +288,7 @@ public class LinuxBrokerHostUsageImpl implements BrokerHostUsage {
                 log.error("Failed to read tx_bytes for NIC " + s, e);
                 return 0d;
             }
-        }).sum() * 8 / 1024;
+        }).sum() * 8d / 1000;
     }
 
     private static long readLongFromFile(String path) throws IOException {

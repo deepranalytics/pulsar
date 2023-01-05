@@ -371,6 +371,15 @@ brokerServiceCompactionThresholdInBytes|If the estimated backlog size is greater
 | brokerEntryMetadataInterceptors | Set broker entry metadata interceptors.<br /><br />Multiple interceptors should be separated by commas. <br /><br />Available values:<li>org.apache.pulsar.common.intercept.AppendBrokerTimestampMetadataInterceptor</li><li>org.apache.pulsar.common.intercept.AppendIndexMetadataInterceptor</li> <br /><br />Example<br />brokerEntryMetadataInterceptors=org.apache.pulsar.common.intercept.AppendBrokerTimestampMetadataInterceptor, org.apache.pulsar.common.intercept.AppendIndexMetadataInterceptor|N/A |
 | enableExposingBrokerEntryMetadataToClient|Whether to expose broker entry metadata to client or not.<br /><br />Available values:<li>true</li><li>false</li><br />Example<br />enableExposingBrokerEntryMetadataToClient=true  | false |
 
+#### Configuration Override For Clients Internal to Broker
+
+It's possible to configure some clients by using the appropriate prefix.
+
+|Prefix|Description|
+|brokerClient_| Configure **all** the broker's Pulsar Clients and Pulsar Admin Clients. These configurations are applied after hard coded configuration and before the above brokerClient configurations named above.|
+|bookkeeper_| Configure the broker's bookkeeper clients used by managed ledgers and the BookkeeperPackagesStorage bookkeeper client. Takes precedence over most other configuration values.|
+
+Note: when running the function worker within the broker, these prefixed configurations do not apply to any of those clients. You must instead configure those clients using the `functions_worker.yml`.
 
 #### Deprecated parameters of Broker
 The following parameters have been deprecated in the `conf/broker.conf` file.
@@ -587,7 +596,7 @@ You can set the log level and configuration in the  [log4j2.yaml](https://github
 |tokenAudienceClaim| The token audience "claim" name, e.g. "aud". It is used to get the audience from token. If it is not set, the audience is not verified. ||
 | tokenAudience | The token audience stands for this broker. The field `tokenAudienceClaim` of a valid token need contains this parameter.| |
 |saslJaasClientAllowedIds|This is a regexp, which limits the range of possible ids which can connect to the Broker using SASL. By default, it is set to `SaslConstants.JAAS_CLIENT_ALLOWED_IDS_DEFAULT`, which is ".*pulsar.*", so only clients whose id contains 'pulsar' are allowed to connect.|N/A|
-|saslJaasBrokerSectionName|Service Principal, for login context name. By default, it is set to `SaslConstants.JAAS_DEFAULT_BROKER_SECTION_NAME`, which is "Broker".|N/A|
+|saslJaasServerSectionName|Service Principal, for login context name. By default, it is set to `SaslConstants.JAAS_DEFAULT_BROKER_SECTION_NAME`, which is "Broker".|N/A|
 |httpMaxRequestSize|If the value is larger than 0, it rejects all HTTP requests with bodies larged than the configured limit.|-1|
 |exposePreciseBacklogInPrometheus| Enable expose the precise backlog stats, set false to use published counter and consumed counter to calculate, this would be more efficient but may be inaccurate. |false|
 |bookkeeperMetadataServiceUri|Metadata service uri is what BookKeeper used for loading corresponding metadata driver and resolving its metadata service location. This value can be fetched using `bookkeeper shell whatisinstanceid` command in BookKeeper cluster. For example: `zk+hierarchical://localhost:2181/ledgers`. The metadata service uri list can also be semicolon separated values like: `zk+hierarchical://zk1:2181;zk2:2181;zk3:2181/ledgers`.|N/A|
@@ -737,6 +746,12 @@ The following parameters have been deprecated in the `conf/standalone.conf` file
 |tlsCertificateFilePath|||
 |tlsKeyFilePath |||
 |tlsTrustCertsFilePath|||
+#### Configuration Override For Clients Internal to WebSocket
+
+It's possible to configure some clients by using the appropriate prefix.
+
+|Prefix|Description|
+|brokerClient_| Configure **all** the broker's Pulsar Clients. These configurations are applied after hard coded configuration and before the above brokerClient configurations named above.|
 
 #### Deprecated parameters of WebSocket
 The following parameters have been deprecated in the `conf/websocket.conf` file.
@@ -800,6 +815,14 @@ The [Pulsar proxy](concepts-architecture-overview.md#pulsar-proxy) can be config
 |tokenAudienceClaim| The token audience "claim" name, e.g. "aud". It is used to get the audience from token. If it is not set, the audience is not verified. ||
 | tokenAudience | The token audience stands for this broker. The field `tokenAudienceClaim` of a valid token need contains this parameter.| |
 |haProxyProtocolEnabled | Enable or disable the [HAProxy](http://www.haproxy.org/) protocol. |false|
+| numIOThreads | Number of threads used for Netty IO. | 2 * Runtime.getRuntime().availableProcessors() |
+| numAcceptorThreads | Number of threads used for Netty Acceptor. | 1 |
+#### Configuration Override For Clients Internal to Proxy
+
+It's possible to configure some clients by using the appropriate prefix.
+
+|Prefix|Description|
+|brokerClient_| Configure **all** the proxy's Pulsar Clients. These configurations are applied after hard coded configuration and before the above brokerClient configurations named above.|
 
 #### Deprecated parameters of Pulsar proxy
 The following parameters have been deprecated in the `conf/proxy.conf` file.

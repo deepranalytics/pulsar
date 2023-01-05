@@ -36,6 +36,8 @@ public class AggregatedSubscriptionStats {
 
     public double msgRateOut;
 
+    public double messageAckRate;
+
     public double msgThroughputOut;
 
     public long msgDelayed;
@@ -57,6 +59,8 @@ public class AggregatedSubscriptionStats {
     double msgRateExpired;
 
     long totalMsgExpired;
+
+    double msgDropRate;
 
     public Map<Consumer, AggregatedConsumerStats> consumerStat = new HashMap<>();
 }

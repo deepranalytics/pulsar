@@ -18,6 +18,17 @@
  */
 package org.apache.pulsar.client.impl;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertNotNull;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import org.apache.pulsar.client.api.BatchReceivePolicy;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.DeadLetterPolicy;
@@ -26,21 +37,8 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
 import org.apache.pulsar.client.api.SubscriptionMode;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
-import org.testng.annotations.BeforeTest;
+import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
-
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.regex.Pattern;
-
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.testng.Assert.assertNotNull;
 
 /**
  * Unit tests of {@link ConsumerBuilderImpl}.
@@ -50,7 +48,7 @@ public class ConsumerBuilderImplTest {
     private static final String TOPIC_NAME = "testTopicName";
     private ConsumerBuilderImpl consumerBuilderImpl;
 
-    @BeforeTest
+    @BeforeMethod(alwaysRun = true)
     public void setup() {
         PulsarClientImpl client = mock(PulsarClientImpl.class);
         ConsumerConfigurationData consumerConfigurationData = mock(ConsumerConfigurationData.class);
@@ -297,6 +295,12 @@ public class ConsumerBuilderImplTest {
                 .deadLetterTopic("test-dead-letter-topic")
                 .retryLetterTopic("test-retry-letter-topic")
                 .build());
+    }
+
+    @Test
+    public void testNullDeadLetterPolicy() {
+        consumerBuilderImpl.deadLetterPolicy(null);
+        verify(consumerBuilderImpl.getConf()).setDeadLetterPolicy(null);
     }
 
     @Test

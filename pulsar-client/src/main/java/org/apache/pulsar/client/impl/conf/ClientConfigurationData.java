@@ -253,6 +253,8 @@ public class ClientConfigurationData implements Serializable, Cloneable {
             name = "tlsTrustStorePassword",
             value = "Password of TLS TrustStore."
     )
+
+    @Secret
     private String tlsTrustStorePassword = null;
 
     @ApiModelProperty(
@@ -324,6 +326,8 @@ public class ClientConfigurationData implements Serializable, Cloneable {
             name = "socks5ProxyUsername",
             value = "Password of SOCKS5 proxy."
     )
+
+    @Secret
     private String socks5ProxyPassword;
 
     public Authentication getAuthentication() {

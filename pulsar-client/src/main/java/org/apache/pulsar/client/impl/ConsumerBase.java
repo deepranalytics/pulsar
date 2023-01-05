@@ -33,7 +33,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.locks.Lock;
@@ -73,8 +72,8 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
     protected final MessageListener<T> listener;
     protected final ConsumerEventListener consumerEventListener;
     protected final ExecutorProvider executorProvider;
-    protected final ScheduledExecutorService externalPinnedExecutor;
-    protected final ScheduledExecutorService internalPinnedExecutor;
+    protected final ExecutorService externalPinnedExecutor;
+    protected final ExecutorService internalPinnedExecutor;
     final BlockingQueue<Message<T>> incomingMessages;
     protected ConcurrentOpenHashMap<MessageIdImpl, MessageIdImpl[]> unAckedChunkedMessageIdSequenceMap;
     protected final ConcurrentLinkedQueue<CompletableFuture<Message<T>>> pendingReceives;
@@ -88,7 +87,6 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
     protected volatile long incomingMessagesSize = 0;
     protected volatile Timeout batchReceiveTimeout = null;
     protected final Lock reentrantLock = new ReentrantLock();
-    private volatile boolean isListenerHandlingMessage = false;
 
     protected static final AtomicLongFieldUpdater<ConsumerBase> CONSUMER_EPOCH =
             AtomicLongFieldUpdater.newUpdater(ConsumerBase.class, "consumerEpoch");
@@ -111,10 +109,11 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
         this.consumerEventListener = conf.getConsumerEventListener();
         // Always use growable queue since items can exceed the advertised size
         this.incomingMessages = new GrowableArrayBlockingQueue<>();
-        this.unAckedChunkedMessageIdSequenceMap = new ConcurrentOpenHashMap<>();
+        this.unAckedChunkedMessageIdSequenceMap =
+                ConcurrentOpenHashMap.<MessageIdImpl, MessageIdImpl[]>newBuilder().build();
         this.executorProvider = executorProvider;
-        this.externalPinnedExecutor = (ScheduledExecutorService) executorProvider.getExecutor();
-        this.internalPinnedExecutor = (ScheduledExecutorService) client.getInternalExecutorService();
+        this.externalPinnedExecutor = executorProvider.getExecutor();
+        this.internalPinnedExecutor = client.getInternalExecutorService();
         this.pendingReceives = Queues.newConcurrentLinkedQueue();
         this.pendingBatchReceives = Queues.newConcurrentLinkedQueue();
         this.schema = schema;
@@ -149,7 +148,10 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
             this.batchReceivePolicy = BatchReceivePolicy.DEFAULT_POLICY;
         }
 
-        if (batchReceivePolicy.getTimeoutMs() > 0) {
+    }
+
+    protected void triggerBatchReceiveTimeoutTask() {
+        if (!hasBatchReceiveTimeout() && batchReceivePolicy.getTimeoutMs() > 0) {
             batchReceiveTimeout = client.timer().newTimeout(this::pendingBatchReceiveTask,
                     batchReceivePolicy.getTimeoutMs(), TimeUnit.MILLISECONDS);
         }
@@ -198,7 +200,7 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
         return internalReceive(timeout, unit);
     }
 
-    protected abstract Message<T> internalReceive(int timeout, TimeUnit unit) throws PulsarClientException;
+    protected abstract Message<T> internalReceive(long timeout, TimeUnit unit) throws PulsarClientException;
 
     @Override
     public Messages<T> batchReceive() throws PulsarClientException {
@@ -905,7 +907,7 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
         }
 
         long timeToWaitMs;
-
+        boolean hasPendingReceives = false;
         synchronized (this) {
             // If it's closing/closed we need to ignore this timeout and not schedule next timeout.
             if (getState() == State.Closing || getState() == State.Closed) {
@@ -942,45 +944,56 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
                 } else {
                     // The diff is greater than zero, set the timeout to the diff value
                     timeToWaitMs = diff;
+                    hasPendingReceives = true;
                     break;
                 }
 
                 opBatchReceive = pendingBatchReceives.peek();
             }
-            batchReceiveTimeout = client.timer().newTimeout(this::pendingBatchReceiveTask,
-                    timeToWaitMs, TimeUnit.MILLISECONDS);
+            if (hasPendingReceives) {
+                batchReceiveTimeout = client.timer().newTimeout(this::pendingBatchReceiveTask,
+                        timeToWaitMs, TimeUnit.MILLISECONDS);
+            } else {
+                batchReceiveTimeout = null;
+            }
         }
     }
 
-    protected void triggerListener() {
-        // Use internalPinnedExecutor to maintain message ordering
+    protected void tryTriggerListener() {
+        if (listener != null) {
+            triggerListener();
+        }
+    }
+
+    private void triggerListener() {
+        // The messages are added into the receiver queue by the internal pinned executor,
+        // so need to use internal pinned executor to avoid race condition which message
+        // might be added into the receiver queue but not able to read here.
         internalPinnedExecutor.execute(() -> {
             try {
-                // Listener should only have one pending/running executable to process a message
-                // See https://github.com/apache/pulsar/issues/11008 for context.
-                if (!isListenerHandlingMessage) {
-                    final Message<T> msg = internalReceive(0, TimeUnit.MILLISECONDS);
+                Message<T> msg;
+                do {
+                    msg = internalReceive(0, TimeUnit.MILLISECONDS);
                     if (msg != null) {
-                        isListenerHandlingMessage = true;
                         // Trigger the notification on the message listener in a separate thread to avoid blocking the
                         // internal pinned executor thread while the message processing happens
+                        final Message<T> finalMsg = msg;
                         if (SubscriptionType.Key_Shared == conf.getSubscriptionType()) {
                             executorProvider.getExecutor(peekMessageKey(msg)).execute(() ->
-                                    callMessageListener(msg));
+                                    callMessageListener(finalMsg));
                         } else {
                             getExternalExecutor(msg).execute(() -> {
-                                callMessageListener(msg);
+                                callMessageListener(finalMsg);
                             });
                         }
+                    } else {
+                        if (log.isDebugEnabled()) {
+                            log.debug("[{}] [{}] Message has been cleared from the queue", topic, subscription);
+                        }
                     }
-                }
+                } while (msg != null);
             } catch (PulsarClientException e) {
                 log.warn("[{}] [{}] Failed to dequeue the message for listener", topic, subscription, e);
-                return;
-            }
-
-            if (log.isDebugEnabled()) {
-                log.debug("[{}] [{}] Message has been cleared from the queue", topic, subscription);
             }
         });
     }
@@ -991,13 +1004,16 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
                 log.debug("[{}][{}] Calling message listener for message {}", topic, subscription,
                         msg.getMessageId());
             }
+            ConsumerImpl receivedConsumer = (msg instanceof TopicMessageImpl)
+                    ? ((TopicMessageImpl<T>) msg).receivedByconsumer : (ConsumerImpl) this;
+            // Increase the permits here since we will not increase permits while receive messages from consumer
+            // after enabled message listener.
+            receivedConsumer.increaseAvailablePermits((MessageImpl<?>) (msg instanceof TopicMessageImpl
+                                ? ((TopicMessageImpl<T>) msg).getMessage() : msg));
             listener.received(ConsumerBase.this, msg);
         } catch (Throwable t) {
             log.error("[{}][{}] Message listener error in processing message: {}", topic, subscription,
                     msg.getMessageId(), t);
-        } finally {
-            isListenerHandlingMessage = false;
-            triggerListener();
         }
     }
 
@@ -1080,6 +1096,10 @@ public abstract class ConsumerBase<T> extends HandlerState implements Consumer<T
             return false;
         }
         return true;
+    }
+
+    public boolean hasBatchReceiveTimeout() {
+        return batchReceiveTimeout != null;
     }
 
     private static final Logger log = LoggerFactory.getLogger(ConsumerBase.class);

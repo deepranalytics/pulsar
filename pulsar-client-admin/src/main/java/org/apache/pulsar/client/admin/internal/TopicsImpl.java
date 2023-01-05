@@ -449,6 +449,32 @@ public class TopicsImpl extends BaseResource implements Topics {
     }
 
     @Override
+    public Map<String, String> getProperties(String topic) throws PulsarAdminException {
+        return sync(() -> getPropertiesAsync(topic));
+    }
+
+    @Override
+    public CompletableFuture<Map<String, String>> getPropertiesAsync(String topic) {
+        TopicName tn = validateTopic(topic);
+        WebTarget path = topicPath(tn, "properties");
+        final CompletableFuture<Map<String, String>> future = new CompletableFuture<>();
+        asyncGetRequest(path,
+                new InvocationCallback<Map<String, String>>() {
+
+                    @Override
+                    public void completed(Map<String, String> response) {
+                        future.complete(response);
+                    }
+
+                    @Override
+                    public void failed(Throwable throwable) {
+                        future.completeExceptionally(getApiException(throwable.getCause()));
+                    }
+                });
+        return future;
+    }
+
+    @Override
     public void deletePartitionedTopic(String topic) throws PulsarAdminException {
         deletePartitionedTopic(topic, false);
     }
@@ -1097,25 +1123,27 @@ public class TopicsImpl extends BaseResource implements Topics {
 
 
     @Override
-    public void createSubscription(String topic, String subscriptionName, MessageId messageId)
+    public void createSubscription(String topic, String subscriptionName, MessageId messageId, boolean replicated,
+                                   Map<String, String> properties)
             throws PulsarAdminException {
-        try {
-            TopicName tn = validateTopic(topic);
-            String encodedSubName = Codec.encode(subscriptionName);
-            WebTarget path = topicPath(tn, "subscription", encodedSubName);
-            request(path).put(Entity.entity(messageId, MediaType.APPLICATION_JSON), ErrorData.class);
-        } catch (Exception e) {
-            throw getApiException(e);
-        }
+        sync(() -> createSubscriptionAsync(topic, subscriptionName, messageId, replicated, properties));
     }
 
     @Override
     public CompletableFuture<Void> createSubscriptionAsync(String topic, String subscriptionName,
-            MessageId messageId) {
+            MessageId messageId, boolean replicated, Map<String, String> properties) {
         TopicName tn = validateTopic(topic);
         String encodedSubName = Codec.encode(subscriptionName);
         WebTarget path = topicPath(tn, "subscription", encodedSubName);
-        return asyncPutRequest(path, Entity.entity(messageId, MediaType.APPLICATION_JSON));
+        path = path.queryParam("replicated", replicated);
+        Object payload = messageId;
+        if (properties != null && !properties.isEmpty()) {
+            ResetCursorData resetCursorData = messageId != null
+                    ? new ResetCursorData(messageId) : new ResetCursorData(MessageId.latest);
+            resetCursorData.setProperties(properties);
+            payload = resetCursorData;
+        }
+        return asyncPutRequest(path, Entity.entity(payload, MediaType.APPLICATION_JSON));
     }
 
     @Override
@@ -1143,6 +1171,25 @@ public class TopicsImpl extends BaseResource implements Topics {
     @Override
     public void resetCursor(String topic, String subName, MessageId messageId) throws PulsarAdminException {
         sync(() -> resetCursorAsync(topic, subName, messageId));
+    }
+
+    @Override
+    public void updateSubscriptionProperties(String topic, String subName, Map<String, String> subscriptionProperties)
+            throws PulsarAdminException {
+        sync(() -> updateSubscriptionPropertiesAsync(topic, subName, subscriptionProperties));
+    }
+
+    @Override
+    public CompletableFuture<Void> updateSubscriptionPropertiesAsync(String topic, String subName,
+                                                                     Map<String, String> subscriptionProperties) {
+        TopicName tn = validateTopic(topic);
+        String encodedSubName = Codec.encode(subName);
+        WebTarget path = topicPath(tn, "subscription", encodedSubName,
+                "properties");
+        if (subscriptionProperties == null) {
+            subscriptionProperties = new HashMap<>();
+        }
+        return asyncPutRequest(path, Entity.entity(subscriptionProperties, MediaType.APPLICATION_JSON));
     }
 
     @Override

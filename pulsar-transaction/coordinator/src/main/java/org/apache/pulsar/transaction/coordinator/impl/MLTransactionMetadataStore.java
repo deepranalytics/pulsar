@@ -34,6 +34,7 @@ import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.Position;
 import org.apache.commons.lang3.tuple.MutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+import org.apache.pulsar.client.api.transaction.TransactionCoordinatorClientException;
 import org.apache.pulsar.client.api.transaction.TxnID;
 import org.apache.pulsar.common.api.proto.Subscription;
 import org.apache.pulsar.common.policies.data.TransactionCoordinatorStats;
@@ -79,7 +80,6 @@ public class MLTransactionMetadataStore
     public MLTransactionMetadataStore(TransactionCoordinatorID tcID,
                                       MLTransactionLogImpl mlTransactionLog,
                                       TransactionTimeoutTracker timeoutTracker,
-                                      TransactionRecoverTracker recoverTracker,
                                       MLTransactionSequenceIdGenerator sequenceIdGenerator) {
         super(State.None);
         this.sequenceIdGenerator = sequenceIdGenerator;
@@ -96,96 +96,108 @@ public class MLTransactionMetadataStore
         DefaultThreadFactory threadFactory = new DefaultThreadFactory("transaction_coordinator_"
                 + tcID.toString() + "thread_factory");
         this.internalPinnedExecutor = Executors.newSingleThreadScheduledExecutor(threadFactory);
+    }
 
+    public CompletableFuture<TransactionMetadataStore> init(TransactionRecoverTracker recoverTracker) {
+        CompletableFuture<TransactionMetadataStore> completableFuture = new CompletableFuture<>();
         if (!changeToInitializingState()) {
             log.error("Managed ledger transaction metadata store change state error when init it");
-            return;
-        }
+            completableFuture
+                    .completeExceptionally(new TransactionCoordinatorClientException
+                    .CoordinatorNotFoundException("transaction metadata store with tcId "
+                            + tcID.toString() + " change state to Initializing error when init it"));
+        } else {
+            internalPinnedExecutor.execute(() -> transactionLog.replayAsync(new TransactionLogReplayCallback() {
 
-        internalPinnedExecutor.execute(() -> transactionLog.replayAsync(new TransactionLogReplayCallback() {
+                @Override
+                public void replayComplete() {
+                    recoverTracker.appendOpenTransactionToTimeoutTracker();
+                    if (!changeToReadyState()) {
+                        log.error("Managed ledger transaction metadata store change state error when replay complete");
+                        completableFuture
+                                .completeExceptionally(new TransactionCoordinatorClientException
+                                        .CoordinatorNotFoundException("transaction metadata store with tcId "
+                                        + tcID.toString() + " change state to Ready error when init it"));
 
-            @Override
-            public void replayComplete() {
-                recoverTracker.appendOpenTransactionToTimeoutTracker();
-                if (!changeToReadyState()) {
-                    log.error("Managed ledger transaction metadata store change state error when replay complete");
-                } else {
-                    recoverTracker.handleCommittingAndAbortingTransaction();
-                    timeoutTracker.start();
-                }
-            }
-
-            @Override
-            public void handleMetadataEntry(Position position, TransactionMetadataEntry transactionMetadataEntry) {
-
-                try {
-
-                    TxnID txnID = new TxnID(transactionMetadataEntry.getTxnidMostBits(),
-                            transactionMetadataEntry.getTxnidLeastBits());
-                    long transactionId = transactionMetadataEntry.getTxnidLeastBits();
-                    switch (transactionMetadataEntry.getMetadataOp()) {
-                        case NEW:
-                            long txnSequenceId = transactionMetadataEntry.getTxnidLeastBits();
-                            if (txnMetaMap.containsKey(transactionId)) {
-                                txnMetaMap.get(transactionId).getRight().add(position);
-                            } else {
-                                List<Position> positions = new ArrayList<>();
-                                positions.add(position);
-                                long openTimestamp = transactionMetadataEntry.getStartTime();
-                                long timeoutAt = transactionMetadataEntry.getTimeoutMs();
-                                txnMetaMap.put(transactionId, MutablePair.of(new TxnMetaImpl(txnID,
-                                        openTimestamp, timeoutAt), positions));
-                                recoverTracker.handleOpenStatusTransaction(txnSequenceId,
-                                        timeoutAt + openTimestamp);
-                            }
-                            break;
-                        case ADD_PARTITION:
-                            if (!txnMetaMap.containsKey(transactionId)) {
-                                transactionLog.deletePosition(Collections.singletonList(position));
-                            } else {
-                                txnMetaMap.get(transactionId).getLeft()
-                                        .addProducedPartitions(transactionMetadataEntry.getPartitionsList());
-                                txnMetaMap.get(transactionId).getRight().add(position);
-                            }
-                            break;
-                        case ADD_SUBSCRIPTION:
-                            if (!txnMetaMap.containsKey(transactionId)) {
-                                transactionLog.deletePosition(Collections.singletonList(position));
-                            } else {
-                                txnMetaMap.get(transactionId).getLeft()
-                                        .addAckedPartitions(subscriptionToTxnSubscription(
-                                                transactionMetadataEntry.getSubscriptionsList()));
-                                txnMetaMap.get(transactionId).getRight().add(position);
-                            }
-                            break;
-                        case UPDATE:
-                            if (!txnMetaMap.containsKey(transactionId)) {
-                                transactionLog.deletePosition(Collections.singletonList(position));
-                            } else {
-                                TxnStatus newStatus = transactionMetadataEntry.getNewStatus();
-                                txnMetaMap.get(transactionId).getLeft()
-                                        .updateTxnStatus(transactionMetadataEntry.getNewStatus(),
-                                                transactionMetadataEntry.getExpectedStatus());
-                                txnMetaMap.get(transactionId).getRight().add(position);
-                                recoverTracker.updateTransactionStatus(txnID.getLeastSigBits(), newStatus);
-                                if (newStatus == TxnStatus.COMMITTED || newStatus == TxnStatus.ABORTED) {
-                                    transactionLog.deletePosition(txnMetaMap
-                                            .get(transactionId).getRight()).thenAccept(v ->
-                                            txnMetaMap.remove(transactionId).getLeft());
-                                }
-                            }
-                            break;
-                        default:
-                            throw new InvalidTxnStatusException("Transaction `"
-                                    + txnID + "` load replay metadata operation "
-                                    + "from transaction log with unknown operation");
+                    } else {
+                        recoverTracker.handleCommittingAndAbortingTransaction();
+                        timeoutTracker.start();
+                        completableFuture.complete(MLTransactionMetadataStore.this);
                     }
-                } catch (InvalidTxnStatusException  e) {
-                    transactionLog.deletePosition(Collections.singletonList(position));
-                    log.error(e.getMessage(), e);
                 }
-            }
-        }));
+
+                @Override
+                public void handleMetadataEntry(Position position, TransactionMetadataEntry transactionMetadataEntry) {
+
+                    try {
+                        TxnID txnID = new TxnID(transactionMetadataEntry.getTxnidMostBits(),
+                            transactionMetadataEntry.getTxnidLeastBits());
+                        long transactionId = transactionMetadataEntry.getTxnidLeastBits();
+                        switch (transactionMetadataEntry.getMetadataOp()) {
+                            case NEW:
+                                long txnSequenceId = transactionMetadataEntry.getTxnidLeastBits();
+                                if (txnMetaMap.containsKey(transactionId)) {
+                                    txnMetaMap.get(transactionId).getRight().add(position);
+                                } else {
+                                    List<Position> positions = new ArrayList<>();
+                                    positions.add(position);
+                                    long openTimestamp = transactionMetadataEntry.getStartTime();
+                                    long timeoutAt = transactionMetadataEntry.getTimeoutMs();
+                                    txnMetaMap.put(transactionId, MutablePair.of(new TxnMetaImpl(txnID,
+                                            openTimestamp, timeoutAt), positions));
+                                    recoverTracker.handleOpenStatusTransaction(txnSequenceId,
+                                            timeoutAt + openTimestamp);
+                                }
+                                break;
+                            case ADD_PARTITION:
+                                if (!txnMetaMap.containsKey(transactionId)) {
+                                    transactionLog.deletePosition(Collections.singletonList(position));
+                                } else {
+                                    txnMetaMap.get(transactionId).getLeft()
+                                            .addProducedPartitions(transactionMetadataEntry.getPartitionsList());
+                                    txnMetaMap.get(transactionId).getRight().add(position);
+                                }
+                                break;
+                            case ADD_SUBSCRIPTION:
+                                if (!txnMetaMap.containsKey(transactionId)) {
+                                    transactionLog.deletePosition(Collections.singletonList(position));
+                                } else {
+                                    txnMetaMap.get(transactionId).getLeft()
+                                            .addAckedPartitions(subscriptionToTxnSubscription(
+                                                    transactionMetadataEntry.getSubscriptionsList()));
+                                    txnMetaMap.get(transactionId).getRight().add(position);
+                                }
+                                break;
+                            case UPDATE:
+                                if (!txnMetaMap.containsKey(transactionId)) {
+                                    transactionLog.deletePosition(Collections.singletonList(position));
+                                } else {
+                                    TxnStatus newStatus = transactionMetadataEntry.getNewStatus();
+                                    txnMetaMap.get(transactionId).getLeft()
+                                            .updateTxnStatus(transactionMetadataEntry.getNewStatus(),
+                                                    transactionMetadataEntry.getExpectedStatus());
+                                    txnMetaMap.get(transactionId).getRight().add(position);
+                                    recoverTracker.updateTransactionStatus(txnID.getLeastSigBits(), newStatus);
+                                    if (newStatus == TxnStatus.COMMITTED || newStatus == TxnStatus.ABORTED) {
+                                        transactionLog.deletePosition(txnMetaMap
+                                                .get(transactionId).getRight()).thenAccept(v ->
+                                                txnMetaMap.remove(transactionId).getLeft());
+                                    }
+                                }
+                                break;
+                            default:
+                                throw new InvalidTxnStatusException("Transaction `"
+                                        + txnID + "` load replay metadata operation "
+                                        + "from transaction log with unknown operation");
+                        }
+                    } catch (InvalidTxnStatusException  e) {
+                        transactionLog.deletePosition(Collections.singletonList(position));
+                        log.error(e.getMessage(), e);
+                    }
+                }
+            }));
+        }
+        return completableFuture;
     }
 
     @Override
@@ -249,15 +261,15 @@ public class MLTransactionMetadataStore
 
     @Override
     public CompletableFuture<Void> addProducedPartitionToTxn(TxnID txnID, List<String> partitions) {
-        CompletableFuture<Void> completableFuture = new CompletableFuture<>();
+        CompletableFuture<Void> promise = new CompletableFuture<>();
         internalPinnedExecutor.execute(() -> {
             if (!checkIfReady()) {
-                completableFuture
+                promise
                         .completeExceptionally(new CoordinatorException.TransactionMetadataStoreStateException(tcID,
                         State.Ready, getState(), "add produced partition"));
                 return;
             }
-            getTxnPositionPair(txnID).thenAccept(txnMetaListPair -> {
+            getTxnPositionPair(txnID).thenCompose(txnMetaListPair -> {
                 TransactionMetadataEntry transactionMetadataEntry = new TransactionMetadataEntry()
                         .setTxnidMostBits(txnID.getMostSigBits())
                         .setTxnidLeastBits(txnID.getLeastSigBits())
@@ -266,43 +278,42 @@ public class MLTransactionMetadataStore
                         .setLastModificationTime(System.currentTimeMillis())
                         .setMaxLocalTxnId(sequenceIdGenerator.getCurrentSequenceId());
 
-                transactionLog.append(transactionMetadataEntry)
-                        .whenComplete((position, exception) -> {
-                            if (exception != null) {
-                                completableFuture.completeExceptionally(exception);
-                                return;
-                            }
+                return transactionLog.append(transactionMetadataEntry)
+                        .thenAccept(position -> {
                             appendLogCount.increment();
                             try {
                                 synchronized (txnMetaListPair.getLeft()) {
                                     txnMetaListPair.getLeft().addProducedPartitions(partitions);
                                     txnMetaMap.get(txnID.getLeastSigBits()).getRight().add(position);
                                 }
-                                completableFuture.complete(null);
+                                promise.complete(null);
                             } catch (InvalidTxnStatusException e) {
                                 transactionLog.deletePosition(Collections.singletonList(position));
                                 log.error("TxnID : " + txnMetaListPair.getLeft().id().toString()
                                         + " add produced partition error with TxnStatus : "
                                         + txnMetaListPair.getLeft().status().name(), e);
-                                completableFuture.completeExceptionally(e);
+                                promise.completeExceptionally(e);
                             }
                         });
+            }).exceptionally(ex -> {
+                promise.completeExceptionally(ex);
+                return null;
             });
         });
-        return completableFuture;
+        return promise;
     }
 
     @Override
     public CompletableFuture<Void> addAckedPartitionToTxn(TxnID txnID,
                                                           List<TransactionSubscription> txnSubscriptions) {
-        CompletableFuture<Void> completableFuture = new CompletableFuture<>();
+        CompletableFuture<Void> promise = new CompletableFuture<>();
         internalPinnedExecutor.execute(() -> {
             if (!checkIfReady()) {
-                completableFuture.completeExceptionally(new CoordinatorException
+                promise.completeExceptionally(new CoordinatorException
                         .TransactionMetadataStoreStateException(tcID, State.Ready, getState(), "add acked partition"));
                 return;
             }
-            getTxnPositionPair(txnID).thenAccept(txnMetaListPair -> {
+            getTxnPositionPair(txnID).thenCompose(txnMetaListPair -> {
                 TransactionMetadataEntry transactionMetadataEntry = new TransactionMetadataEntry()
                         .setTxnidMostBits(txnID.getMostSigBits())
                         .setTxnidLeastBits(txnID.getLeastSigBits())
@@ -311,47 +322,46 @@ public class MLTransactionMetadataStore
                         .setLastModificationTime(System.currentTimeMillis())
                         .setMaxLocalTxnId(sequenceIdGenerator.getCurrentSequenceId());
 
-                transactionLog.append(transactionMetadataEntry)
-                        .whenComplete((position, exception) -> {
-                            if (exception != null) {
-                                completableFuture.completeExceptionally(exception);
-                                return;
-                            }
+                return transactionLog.append(transactionMetadataEntry)
+                        .thenAccept(position -> {
                             appendLogCount.increment();
                             try {
                                 synchronized (txnMetaListPair.getLeft()) {
                                     txnMetaListPair.getLeft().addAckedPartitions(txnSubscriptions);
                                     txnMetaMap.get(txnID.getLeastSigBits()).getRight().add(position);
                                 }
-                                completableFuture.complete(null);
+                                promise.complete(null);
                             } catch (InvalidTxnStatusException e) {
                                 transactionLog.deletePosition(Collections.singletonList(position));
                                 log.error("TxnID : " + txnMetaListPair.getLeft().id().toString()
                                         + " add acked subscription error with TxnStatus : "
                                         + txnMetaListPair.getLeft().status().name(), e);
-                                completableFuture.completeExceptionally(e);
+                                promise.completeExceptionally(e);
                             }
                         });
+            }).exceptionally(ex -> {
+                promise.completeExceptionally(ex);
+                return null;
             });
         });
-        return completableFuture;
+        return promise;
     }
 
     @Override
     public CompletableFuture<Void> updateTxnStatus(TxnID txnID, TxnStatus newStatus,
                                                                 TxnStatus expectedStatus, boolean isTimeout) {
-        CompletableFuture<Void> completableFuture = new CompletableFuture<>();
+        CompletableFuture<Void> promise = new CompletableFuture<>();
         internalPinnedExecutor.execute(() -> {
             if (!checkIfReady()) {
-                completableFuture.completeExceptionally(new CoordinatorException
+                promise.completeExceptionally(new CoordinatorException
                         .TransactionMetadataStoreStateException(tcID,
                         State.Ready, getState(), "update transaction status"));
                 return;
             }
-            getTxnPositionPair(txnID).thenAccept(txnMetaListPair -> {
+            getTxnPositionPair(txnID).thenCompose(txnMetaListPair -> {
                 if (txnMetaListPair.getLeft().status() == newStatus) {
-                    completableFuture.complete(null);
-                    return;
+                    promise.complete(null);
+                    return promise;
                 }
                 TransactionMetadataEntry transactionMetadataEntry = new TransactionMetadataEntry()
                         .setTxnidMostBits(txnID.getMostSigBits())
@@ -362,51 +372,48 @@ public class MLTransactionMetadataStore
                         .setNewStatus(newStatus)
                         .setMaxLocalTxnId(sequenceIdGenerator.getCurrentSequenceId());
 
-                transactionLog.append(transactionMetadataEntry).whenComplete((position, throwable) -> {
-                    if (throwable != null) {
-                        completableFuture.completeExceptionally(throwable);
-                        return;
-                    }
-                    appendLogCount.increment();
-                    try {
-                        synchronized (txnMetaListPair.getLeft()) {
-                            txnMetaListPair.getLeft().updateTxnStatus(newStatus, expectedStatus);
-                            txnMetaListPair.getRight().add(position);
-                        }
-                        if (newStatus == TxnStatus.ABORTING && isTimeout) {
-                            this.transactionTimeoutCount.increment();
-                        }
-                        if (newStatus == TxnStatus.COMMITTED || newStatus == TxnStatus.ABORTED) {
-                            transactionLog.deletePosition(txnMetaListPair.getRight()).whenComplete((v, exception) -> {
-                                if (exception != null) {
-                                    completableFuture.completeExceptionally(exception);
-                                    return;
+                return transactionLog.append(transactionMetadataEntry)
+                        .thenAccept(position -> {
+                            appendLogCount.increment();
+                            try {
+                                synchronized (txnMetaListPair.getLeft()) {
+                                    txnMetaListPair.getLeft().updateTxnStatus(newStatus, expectedStatus);
+                                    txnMetaListPair.getRight().add(position);
                                 }
-                                this.transactionMetadataStoreStats
-                                        .addTransactionExecutionLatencySample(System.currentTimeMillis()
-                                                - txnMetaListPair.getLeft().getOpenTimestamp());
-                                if (newStatus == TxnStatus.COMMITTED) {
-                                    committedTransactionCount.increment();
-                                } else {
-                                    abortedTransactionCount.increment();
+                                if (newStatus == TxnStatus.ABORTING && isTimeout) {
+                                    this.transactionTimeoutCount.increment();
                                 }
-                                txnMetaMap.remove(txnID.getLeastSigBits());
-                                completableFuture.complete(null);
-                            });
-                            return;
-                        }
-                        completableFuture.complete(null);
-                    } catch (InvalidTxnStatusException e) {
-                        transactionLog.deletePosition(Collections.singletonList(position));
-                        log.error("TxnID : " + txnMetaListPair.getLeft().id().toString()
-                                + " add update txn status error with TxnStatus : "
-                                + txnMetaListPair.getLeft().status().name(), e);
-                        completableFuture.completeExceptionally(e);
-                    }
-                });
+                                if (newStatus == TxnStatus.COMMITTED || newStatus == TxnStatus.ABORTED) {
+                                    this.transactionMetadataStoreStats
+                                            .addTransactionExecutionLatencySample(System.currentTimeMillis()
+                                                    - txnMetaListPair.getLeft().getOpenTimestamp());
+                                    if (newStatus == TxnStatus.COMMITTED) {
+                                        committedTransactionCount.increment();
+                                    } else {
+                                        abortedTransactionCount.increment();
+                                    }
+                                    txnMetaMap.remove(txnID.getLeastSigBits());
+                                    transactionLog.deletePosition(txnMetaListPair.getRight()).exceptionally(ex -> {
+                                        log.warn("Failed to delete transaction log position "
+                                                + "at end transaction [{}]", txnID);
+                                        return null;
+                                    });
+                                }
+                                promise.complete(null);
+                            } catch (InvalidTxnStatusException e) {
+                                transactionLog.deletePosition(Collections.singletonList(position));
+                                log.error("TxnID : " + txnMetaListPair.getLeft().id().toString()
+                                        + " add update txn status error with TxnStatus : "
+                                        + txnMetaListPair.getLeft().status().name(), e);
+                                promise.completeExceptionally(e);
+                            }
+                        });
+            }).exceptionally(ex -> {
+                promise.completeExceptionally(ex);
+                return null;
             });
         });
-       return completableFuture;
+       return promise;
     }
 
     @Override

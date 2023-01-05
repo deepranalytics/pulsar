@@ -38,7 +38,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
-import java.util.concurrent.atomic.LongAdder;
 import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.Position;
 import org.apache.pulsar.broker.PulsarServerException;
@@ -107,9 +106,6 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
             AtomicLongFieldUpdater.newUpdater(NonPersistentTopic.class, "entriesAddedCounter");
     private volatile long entriesAddedCounter = 0;
 
-    private final LongAdder bytesOutFromRemovedSubscriptions = new LongAdder();
-    private final LongAdder msgOutFromRemovedSubscriptions = new LongAdder();
-
     private static final FastThreadLocal<TopicStats> threadLocalTopicStats = new FastThreadLocal<TopicStats>() {
         @Override
         protected TopicStats initialValue() {
@@ -143,8 +139,16 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
     public NonPersistentTopic(String topic, BrokerService brokerService) {
         super(topic, brokerService);
 
-        this.subscriptions = new ConcurrentOpenHashMap<>(16, 1);
-        this.replicators = new ConcurrentOpenHashMap<>(16, 1);
+        this.subscriptions =
+                ConcurrentOpenHashMap.<String, NonPersistentSubscription>newBuilder()
+                        .expectedItems(16)
+                        .concurrencyLevel(1)
+                        .build();
+        this.replicators =
+                ConcurrentOpenHashMap.<String, NonPersistentReplicator>newBuilder()
+                        .expectedItems(16)
+                        .concurrencyLevel(1)
+                        .build();
         this.isFenced = false;
         registerTopicPolicyListener();
     }
@@ -241,7 +245,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
                 option.isDurable(), option.getStartMessageId(), option.getMetadata(),
                 option.isReadCompacted(), option.getInitialPosition(),
                 option.getStartMessageRollbackDurationSec(), option.isReplicatedSubscriptionStateArg(),
-                option.getKeySharedMeta());
+                option.getKeySharedMeta(), option.getSubscriptionProperties().orElse(null));
     }
 
     @Override
@@ -254,7 +258,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
                                                  KeySharedMeta keySharedMeta) {
         return internalSubscribe(cnx, subscriptionName, consumerId, subType, priorityLevel, consumerName,
                 isDurable, startMessageId, metadata, readCompacted, initialPosition, resetStartMessageBackInSec,
-                replicateSubscriptionState, keySharedMeta);
+                replicateSubscriptionState, keySharedMeta, null);
     }
 
     private CompletableFuture<Consumer> internalSubscribe(final TransportCnx cnx, String subscriptionName,
@@ -264,7 +268,8 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
                                                           boolean readCompacted, InitialPosition initialPosition,
                                                           long resetStartMessageBackInSec,
                                                           boolean replicateSubscriptionState,
-                                                          KeySharedMeta keySharedMeta) {
+                                                          KeySharedMeta keySharedMeta,
+                                                          Map<String, String> subscriptionProperties) {
 
         return brokerService.checkTopicNsOwnership(getName()).thenCompose(__ -> {
             final CompletableFuture<Consumer> future = new CompletableFuture<>();
@@ -304,7 +309,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
             }
 
             NonPersistentSubscription subscription = subscriptions.computeIfAbsent(subscriptionName,
-                    name -> new NonPersistentSubscription(this, subscriptionName, isDurable));
+                    name -> new NonPersistentSubscription(this, subscriptionName, isDurable, subscriptionProperties));
 
             Consumer consumer = new Consumer(subscription, subType, topic, consumerId, priorityLevel, consumerName,
                     false, cnx, cnx.getAuthRole(), metadata, readCompacted, initialPosition, keySharedMeta,
@@ -356,8 +361,9 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
 
     @Override
     public CompletableFuture<Subscription> createSubscription(String subscriptionName, InitialPosition initialPosition,
-            boolean replicateSubscriptionState) {
-        return CompletableFuture.completedFuture(new NonPersistentSubscription(this, subscriptionName, true));
+            boolean replicateSubscriptionState, Map<String, String> properties) {
+        return CompletableFuture.completedFuture(new NonPersistentSubscription(this, subscriptionName, true,
+                properties));
     }
 
     @Override
@@ -434,7 +440,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
                             // topic GC iterates over topics map and removing from the map with the same thread creates
                             // deadlock. so, execute it in different thread
                             brokerService.executor().execute(() -> {
-                                brokerService.removeTopicFromCache(topic);
+                                brokerService.removeTopicFromCache(NonPersistentTopic.this);
                                 unregisterTopicPolicyListener();
                                 log.info("[{}] Topic deleted", topic);
                                 deleteFuture.complete(null);
@@ -485,11 +491,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
         replicators.forEach((cluster, replicator) -> futures.add(replicator.disconnect()));
         producers.values().forEach(producer -> futures.add(producer.disconnect()));
         if (topicPublishRateLimiter != null) {
-            try {
-                topicPublishRateLimiter.close();
-            } catch (Exception e) {
-                log.warn("Error closing topicPublishRateLimiter for topic {}", topic, e);
-            }
+            topicPublishRateLimiter.close();
         }
         subscriptions.forEach((s, sub) -> futures.add(sub.disconnect()));
         if (this.resourceGroupPublishLimiter != null) {
@@ -505,7 +507,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
             // unload topic iterates over topics map and removing from the map with the same thread creates deadlock.
             // so, execute it in different thread
             brokerService.executor().execute(() -> {
-                brokerService.removeTopicFromCache(topic);
+                brokerService.removeTopicFromCache(NonPersistentTopic.this);
                 unregisterTopicPolicyListener();
                 closeFuture.complete(null);
             });
@@ -718,6 +720,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
             double subMsgRateOut = 0;
             double subMsgThroughputOut = 0;
             double subMsgRateRedeliver = 0;
+            double subMsgAckRate = 0;
 
             // Start subscription name & consumers
             try {
@@ -732,6 +735,8 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
 
                     ConsumerStatsImpl consumerStats = consumer.getStats();
                     subMsgRateOut += consumerStats.msgRateOut;
+                    subMsgAckRate += consumerStats.messageAckRate;
+
                     subMsgThroughputOut += consumerStats.msgThroughputOut;
                     subMsgRateRedeliver += consumerStats.msgRateRedeliver;
 
@@ -746,6 +751,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
                 topicStatsStream.writePair("msgBacklog", subscription.getNumberOfEntriesInBacklog(false));
                 topicStatsStream.writePair("msgRateExpired", subscription.getExpiredMessageRate());
                 topicStatsStream.writePair("msgRateOut", subMsgRateOut);
+                topicStatsStream.writePair("messageAckRate", subMsgAckRate);
                 topicStatsStream.writePair("msgThroughputOut", subMsgThroughputOut);
                 topicStatsStream.writePair("msgRateRedeliver", subMsgRateRedeliver);
                 topicStatsStream.writePair("type", subscription.getTypeString());
@@ -783,6 +789,7 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
         topicStatsStream.writePair("bytesInCount", getBytesInCounter());
         topicStatsStream.writePair("msgOutCount", getMsgOutCounter());
         topicStatsStream.writePair("bytesOutCount", getBytesOutCounter());
+        topicStatsStream.writePair("filteredEntriesCount", getFilteredEntriesCount());
 
         nsStats.msgRateIn += topicStats.aggMsgRateIn;
         nsStats.msgRateOut += topicStats.aggMsgRateOut;
@@ -1021,6 +1028,9 @@ public class NonPersistentTopic extends AbstractTopic implements Topic, TopicPol
 
             return FutureUtil.waitForAll(consumerCheckFutures)
                     .thenCompose((___) -> checkReplicationAndRetryOnFailure());
+        }).exceptionally(ex -> {
+            log.error("[{}] update namespace polices : {} error", this.getName(), data, ex);
+            throw FutureUtil.wrapToCompletionException(ex);
         });
     }
 

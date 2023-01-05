@@ -24,11 +24,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
-import java.util.concurrent.atomic.LongAdder;
 import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.Position;
 import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.pulsar.broker.intercept.BrokerInterceptor;
+import org.apache.pulsar.broker.service.AbstractSubscription;
 import org.apache.pulsar.broker.service.BrokerServiceException;
 import org.apache.pulsar.broker.service.BrokerServiceException.ServerMetadataException;
 import org.apache.pulsar.broker.service.BrokerServiceException.SubscriptionBusyException;
@@ -48,7 +48,7 @@ import org.apache.pulsar.common.util.FutureUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class NonPersistentSubscription implements Subscription {
+public class NonPersistentSubscription extends AbstractSubscription implements Subscription {
     private final NonPersistentTopic topic;
     private volatile NonPersistentDispatcher dispatcher;
     private final String topicName;
@@ -66,15 +66,15 @@ public class NonPersistentSubscription implements Subscription {
     // Timestamp of when this subscription was last seen active
     private volatile long lastActive;
 
-    private final LongAdder bytesOutFromRemovedConsumers = new LongAdder();
-    private final LongAdder msgOutFromRemovedConsumer = new LongAdder();
+    private volatile Map<String, String> subscriptionProperties;
 
     // If isDurable is false(such as a Reader), remove subscription from topic when closing this subscription.
     private final boolean isDurable;
 
     private KeySharedMode keySharedMode = null;
 
-    public NonPersistentSubscription(NonPersistentTopic topic, String subscriptionName, boolean isDurable) {
+    public NonPersistentSubscription(NonPersistentTopic topic, String subscriptionName, boolean isDurable,
+                                     Map<String, String> properties) {
         this.topic = topic;
         this.topicName = topic.getName();
         this.subName = subscriptionName;
@@ -82,6 +82,8 @@ public class NonPersistentSubscription implements Subscription {
         IS_FENCED_UPDATER.set(this, FALSE);
         this.lastActive = System.currentTimeMillis();
         this.isDurable = isDurable;
+        this.subscriptionProperties = properties != null
+                ? Collections.unmodifiableMap(properties) : Collections.emptyMap();
     }
 
     @Override
@@ -452,6 +454,7 @@ public class NonPersistentSubscription implements Subscription {
                 ConsumerStatsImpl consumerStats = consumer.getStats();
                 subStats.consumers.add(consumerStats);
                 subStats.msgRateOut += consumerStats.msgRateOut;
+                subStats.messageAckRate += consumerStats.messageAckRate;
                 subStats.msgThroughputOut += consumerStats.msgThroughputOut;
                 subStats.bytesOutCounter += consumerStats.bytesOutCounter;
                 subStats.msgOutCounter += consumerStats.msgOutCounter;
@@ -518,4 +521,19 @@ public class NonPersistentSubscription implements Subscription {
     public void updateLastActive() {
         this.lastActive = System.currentTimeMillis();
     }
+
+    public Map<String, String> getSubscriptionProperties() {
+        return subscriptionProperties;
+    }
+
+    @Override
+    public CompletableFuture<Void> updateSubscriptionProperties(Map<String, String> subscriptionProperties) {
+        if (subscriptionProperties == null || subscriptionProperties.isEmpty()) {
+          this.subscriptionProperties = Collections.emptyMap();
+        } else {
+           this.subscriptionProperties = Collections.unmodifiableMap(subscriptionProperties);
+        }
+        return CompletableFuture.completedFuture(null);
+    }
+
 }

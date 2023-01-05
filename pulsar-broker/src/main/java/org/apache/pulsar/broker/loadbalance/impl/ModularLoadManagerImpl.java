@@ -204,7 +204,10 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
      */
     public ModularLoadManagerImpl() {
         brokerCandidateCache = new HashSet<>();
-        brokerToNamespaceToBundleRange = new ConcurrentOpenHashMap<>();
+        brokerToNamespaceToBundleRange =
+                ConcurrentOpenHashMap.<String,
+                        ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>>>newBuilder()
+                        .build();
         defaultStats = new NamespaceBundleStats();
         filterPipeline = new ArrayList<>();
         loadData = new LoadData();
@@ -444,8 +447,9 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
         long timeSinceLastReportWrittenToStore = System.currentTimeMillis() - localData.getLastUpdate();
         if (timeSinceLastReportWrittenToStore > updateMaxIntervalMillis) {
             log.info("Writing local data to metadata store because time since last"
-                            + " update exceeded threshold of {} minutes",
-                    conf.getLoadBalancerReportUpdateMaxIntervalMinutes());
+                            + " update exceeded threshold of {} minutes. ResourceUsage:[{}]",
+                    conf.getLoadBalancerReportUpdateMaxIntervalMinutes(),
+                    localData.printResourceUsage());
             // Always update after surpassing the maximum interval.
             return true;
         }
@@ -459,9 +463,10 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
                                         percentChange(lastData.getNumBundles(), localData.getNumBundles()))));
         if (maxChange > conf.getLoadBalancerReportUpdateThresholdPercentage()) {
             log.info("Writing local data to metadata store because maximum change {}% exceeded threshold {}%; "
-                            + "time since last report written is {} seconds", maxChange,
+                            + "time since last report written is {} seconds. ResourceUsage:[{}]", maxChange,
                     conf.getLoadBalancerReportUpdateThresholdPercentage(),
-                    timeSinceLastReportWrittenToStore / 1000.0);
+                    timeSinceLastReportWrittenToStore / 1000.0,
+                    localData.printResourceUsage());
             return true;
         }
         return false;
@@ -567,7 +572,10 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
             brokerData.getTimeAverageData().reset(statsMap.keySet(), bundleData, defaultStats);
             final ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>> namespaceToBundleRange =
                     brokerToNamespaceToBundleRange
-                            .computeIfAbsent(broker, k -> new ConcurrentOpenHashMap<>());
+                            .computeIfAbsent(broker, k ->
+                                    ConcurrentOpenHashMap.<String,
+                                            ConcurrentOpenHashSet<String>>newBuilder()
+                                            .build());
             synchronized (namespaceToBundleRange) {
                 namespaceToBundleRange.clear();
                 LoadManagerShared.fillNamespaceToBundlesMap(statsMap.keySet(), namespaceToBundleRange);
@@ -839,7 +847,11 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
                     LoadManagerShared.applyNamespacePolicies(serviceUnit, policies, brokerCandidateCache,
                             getAvailableBrokers(),
                             brokerTopicLoadingPredicate);
-                    broker = placementStrategy.selectBroker(brokerCandidateCache, data, loadData, conf);
+                    Optional<String> brokerTmp =
+                            placementStrategy.selectBroker(brokerCandidateCache, data, loadData, conf);
+                    if (brokerTmp.isPresent()) {
+                        broker = brokerTmp;
+                    }
                 }
 
                 // Add new bundle to preallocated.
@@ -850,9 +862,13 @@ public class ModularLoadManagerImpl implements ModularLoadManager {
                 final String bundleRange = LoadManagerShared.getBundleRangeFromBundleName(bundle);
                 final ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>> namespaceToBundleRange =
                         brokerToNamespaceToBundleRange
-                                .computeIfAbsent(broker.get(), k -> new ConcurrentOpenHashMap<>());
+                                .computeIfAbsent(broker.get(),
+                                        k -> ConcurrentOpenHashMap.<String,
+                                                ConcurrentOpenHashSet<String>>newBuilder()
+                                                .build());
                 synchronized (namespaceToBundleRange) {
-                    namespaceToBundleRange.computeIfAbsent(namespaceName, k -> new ConcurrentOpenHashSet<>())
+                    namespaceToBundleRange.computeIfAbsent(namespaceName,
+                            k -> ConcurrentOpenHashSet.<String>newBuilder().build())
                             .add(bundleRange);
                 }
                 return broker;

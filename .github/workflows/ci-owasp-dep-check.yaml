@@ -21,11 +21,11 @@ name: CI - Misc - OWASP Dependency Check
 on:
   pull_request:
     branches:
-      - master
       - branch-*
-  push:
-    branches:
-      - branch-*
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   MAVEN_OPTS: -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryHandler.class=standard -Dmaven.wagon.http.retryHandler.count=3
@@ -52,6 +52,8 @@ jobs:
             poms:
               - 'pom.xml'
               - '**/pom.xml'
+              - 'src/owasp-dependency-check-false-positives.xml'
+              - 'src/owasp-dependency-check-suppressions.xml'
 
       - name: Cache local Maven repository
         if: ${{ steps.changes.outputs.poms == 'true' }}

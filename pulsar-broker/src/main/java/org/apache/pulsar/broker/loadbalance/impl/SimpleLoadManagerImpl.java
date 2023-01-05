@@ -18,7 +18,6 @@
  */
 package org.apache.pulsar.broker.loadbalance.impl;
 
-import static org.apache.pulsar.broker.loadbalance.impl.LoadManagerShared.LOAD_REPORT_UPDATE_MINIMUM_INTERVAL;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.CacheBuilder;
@@ -202,7 +201,10 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
         bundleLossesCache = new HashSet<>();
         brokerCandidateCache = new HashSet<>();
         availableBrokersCache = new HashSet<>();
-        brokerToNamespaceToBundleRange = new ConcurrentOpenHashMap<>();
+        brokerToNamespaceToBundleRange =
+                ConcurrentOpenHashMap.<String,
+                        ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>>>newBuilder()
+                        .build();
         this.brokerTopicLoadingPredicate = new BrokerTopicLoadingPredicate() {
             @Override
             public boolean isEnablePersistentTopics(String brokerUrl) {
@@ -851,8 +853,12 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
                 // same broker.
                 brokerToNamespaceToBundleRange
                         .computeIfAbsent(selectedRU.getResourceId().replace("http://", ""),
-                                k -> new ConcurrentOpenHashMap<>())
-                        .computeIfAbsent(namespaceName, k -> new ConcurrentOpenHashSet<>()).add(bundleRange);
+                                k -> ConcurrentOpenHashMap.<String,
+                                        ConcurrentOpenHashSet<String>>newBuilder()
+                                        .build())
+                        .computeIfAbsent(namespaceName, k ->
+                                ConcurrentOpenHashSet.<String>newBuilder().build())
+                        .add(bundleRange);
                 ranking.addPreAllocatedServiceUnit(serviceUnitId, quota);
                 resourceUnitRankings.put(selectedRU, ranking);
             }
@@ -1153,10 +1159,12 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
     public void writeLoadReportOnZookeeper() throws Exception {
         // update average JVM heap usage to average value of the last 120 seconds
         long realtimeJvmHeapUsage = getRealtimeJvmHeapUsageMBytes();
+        int minInterval = pulsar.getConfiguration().getLoadBalancerReportUpdateMinIntervalMillis();
         if (this.avgJvmHeapUsageMBytes <= 0) {
             this.avgJvmHeapUsageMBytes = realtimeJvmHeapUsage;
         } else {
-            long weight = Math.max(1, TimeUnit.SECONDS.toMillis(120) / LOAD_REPORT_UPDATE_MINIMUM_INTERVAL);
+
+            long weight = Math.max(1, TimeUnit.SECONDS.toMillis(120) / minInterval);
             this.avgJvmHeapUsageMBytes = ((weight - 1) * this.avgJvmHeapUsageMBytes + realtimeJvmHeapUsage) / weight;
         }
 
@@ -1175,7 +1183,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
             int maxUpdateIntervalInMinutes = pulsar.getConfiguration().getLoadBalancerReportUpdateMaxIntervalMinutes();
             if (timeElapsedSinceLastReport > TimeUnit.MINUTES.toMillis(maxUpdateIntervalInMinutes)) {
                 needUpdate = true;
-            } else if (timeElapsedSinceLastReport > LOAD_REPORT_UPDATE_MINIMUM_INTERVAL) {
+            } else if (timeElapsedSinceLastReport > minInterval) {
                 // check number of bundles assigned, comparing with last LoadReport
                 long oldBundleCount = lastLoadReport.getNumBundles();
                 long newBundleCount = pulsar.getBrokerService().getNumberOfNamespaceBundles();
@@ -1244,7 +1252,7 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
      */
     private boolean isLoadReportGenerationIntervalPassed() {
         long timeSinceLastGenMillis = System.currentTimeMillis() - lastLoadReport.getTimestamp();
-        return timeSinceLastGenMillis > LOAD_REPORT_UPDATE_MINIMUM_INTERVAL;
+        return timeSinceLastGenMillis > pulsar.getConfiguration().getLoadBalancerReportUpdateMinIntervalMillis();
     }
 
     // todo: changeme: this can be optimized, we don't have to iterate through everytime
@@ -1271,7 +1279,10 @@ public class SimpleLoadManagerImpl implements LoadManager, Consumer<Notification
             final Set<String> preallocatedBundles = resourceUnitRankings.get(resourceUnit).getPreAllocatedBundles();
             final ConcurrentOpenHashMap<String, ConcurrentOpenHashSet<String>> namespaceToBundleRange =
                     brokerToNamespaceToBundleRange
-                            .computeIfAbsent(broker.replace("http://", ""), k -> new ConcurrentOpenHashMap<>());
+                            .computeIfAbsent(broker.replace("http://", ""),
+                                    k -> ConcurrentOpenHashMap.<String,
+                                            ConcurrentOpenHashSet<String>>newBuilder()
+                                            .build());
             namespaceToBundleRange.clear();
             LoadManagerShared.fillNamespaceToBundlesMap(loadedBundles, namespaceToBundleRange);
             LoadManagerShared.fillNamespaceToBundlesMap(preallocatedBundles, namespaceToBundleRange);

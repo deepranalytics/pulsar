@@ -20,7 +20,6 @@ package org.apache.pulsar.schema;
 
 import static org.apache.pulsar.common.naming.TopicName.PUBLIC_TENANT;
 import static org.apache.pulsar.schema.compatibility.SchemaCompatibilityCheckTest.randomName;
-
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
@@ -28,13 +27,10 @@ import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 import static org.testng.internal.junit.ArrayAsserts.assertArrayEquals;
-
-import org.apache.avro.Schema.Parser;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.Sets;
-
 import java.io.ByteArrayInputStream;
+import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
@@ -44,9 +40,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
-
 import lombok.Cleanup;
+import lombok.EqualsAndHashCode;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.avro.Schema.Parser;
 import org.apache.bookkeeper.client.BKException;
 import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest;
@@ -59,7 +56,9 @@ import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.client.api.SchemaSerializationException;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
+import org.apache.pulsar.client.api.SubscriptionType;
 import org.apache.pulsar.client.api.TypedMessageBuilder;
 import org.apache.pulsar.client.api.schema.GenericRecord;
 import org.apache.pulsar.client.api.schema.SchemaDefinition;
@@ -897,6 +896,9 @@ public class SchemaTest extends MockedPulsarServiceBaseTest {
         producer.newMessage(Schema.NATIVE_AVRO(personThreeSchemaAvroNative)).value(content).send();
 
         List<SchemaInfo> allSchemas = admin.schemas().getAllSchemas(topic);
+        allSchemas.forEach(schemaInfo -> {
+            ((SchemaInfoImpl)schemaInfo).setTimestamp(0);
+        });
         Assert.assertEquals(allSchemas.size(), 5);
         Assert.assertEquals(allSchemas.get(0), Schema.STRING.getSchemaInfo());
         Assert.assertEquals(allSchemas.get(1), Schema.JSON(Schemas.PersonThree.class).getSchemaInfo());
@@ -1109,6 +1111,76 @@ public class SchemaTest extends MockedPulsarServiceBaseTest {
                 break;
             default:
                 // nothing to do
+        }
+    }
+
+    @Test
+    public void testAvroSchemaWithHttpLookup() throws Exception {
+        stopBroker();
+        isTcpLookup = false;
+        setup();
+        testIncompatibleSchema();
+    }
+
+    @Test
+    public void testAvroSchemaWithTcpLookup() throws Exception {
+        stopBroker();
+        isTcpLookup = true;
+        setup();
+        testIncompatibleSchema();
+    }
+
+    private void testIncompatibleSchema() throws Exception {
+        final String namespace = "test-namespace-" + randomName(16);
+        String ns = PUBLIC_TENANT + "/" + namespace;
+        admin.namespaces().createNamespace(ns, Sets.newHashSet(CLUSTER_NAME));
+
+        final String autoProducerTopic = getTopicName(ns, "testEmptySchema");
+
+        @Cleanup
+        Consumer<User> consumer = pulsarClient
+                .newConsumer(Schema.AVRO(User.class))
+                .topic(autoProducerTopic)
+                .subscriptionType(SubscriptionType.Shared)
+                .subscriptionName("sub-1")
+                .subscribe();
+
+        @Cleanup
+        Producer<User> userProducer = pulsarClient
+                .newProducer(Schema.AVRO(User.class))
+                .topic(autoProducerTopic)
+                .enableBatching(false)
+                .create();
+
+        @Cleanup
+        Producer<byte[]> producer = pulsarClient
+                .newProducer()
+                .topic(autoProducerTopic)
+                .enableBatching(false)
+                .create();
+
+        User test = new User("test");
+        userProducer.send(test);
+        producer.send("test".getBytes(StandardCharsets.UTF_8));
+        Message<User> message1 = consumer.receive();
+        Assert.assertEquals(test, message1.getValue());
+        Message<User> message2 = consumer.receive();
+        try {
+            message2.getValue();
+        } catch (SchemaSerializationException e) {
+            final String schemaString =
+                    new String(Schema.AVRO(User.class).getSchemaInfo().getSchema(), StandardCharsets.UTF_8);
+            Assert.assertTrue(e.getMessage().contains(schemaString));
+            Assert.assertTrue(e.getMessage().contains("payload (4 bytes)"));
+        }
+    }
+
+    @EqualsAndHashCode
+    static class User implements Serializable {
+        private String name;
+        public User() {}
+        public User(String name) {
+            this.name = name;
         }
     }
 

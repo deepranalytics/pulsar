@@ -39,7 +39,9 @@ import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.ServiceConfiguration;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
+import org.apache.pulsar.client.admin.GetStatsOptions;
 import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageId;
@@ -47,6 +49,7 @@ import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.Reader;
+import org.apache.pulsar.client.impl.MessageIdImpl;
 import org.apache.pulsar.common.policies.data.BacklogQuota;
 import org.apache.pulsar.common.policies.data.ClusterData;
 import org.apache.pulsar.common.policies.data.PersistentTopicInternalStats;
@@ -57,7 +60,9 @@ import org.apache.pulsar.zookeeper.LocalBookkeeperEnsemble;
 import org.awaitility.Awaitility;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testng.annotations.AfterClass;
 import org.testng.annotations.AfterMethod;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
@@ -72,7 +77,7 @@ public class BacklogQuotaManagerTest {
 
     LocalBookkeeperEnsemble bkEnsemble;
 
-    private static final int TIME_TO_CHECK_BACKLOG_QUOTA = 3;
+    private static final int TIME_TO_CHECK_BACKLOG_QUOTA = 2;
     private static final int MAX_ENTRIES_PER_LEDGER = 5;
 
     @DataProvider(name = "backlogQuotaSizeGB")
@@ -80,7 +85,7 @@ public class BacklogQuotaManagerTest {
         return new Object[][] { { true }, { false } };
     }
 
-    @BeforeMethod
+    @BeforeClass
     void setup() throws Exception {
         try {
             // start local bookie and zookeeper
@@ -101,6 +106,7 @@ public class BacklogQuotaManagerTest {
             config.setManagedLedgerMaxEntriesPerLedger(MAX_ENTRIES_PER_LEDGER);
             config.setManagedLedgerMinLedgerRolloverTimeMinutes(0);
             config.setAllowAutoTopicCreationType("non-partitioned");
+            config.setForceDeleteNamespaceAllowed(true);
 
             pulsar = new PulsarService(config);
             pulsar.start();
@@ -111,19 +117,13 @@ public class BacklogQuotaManagerTest {
             admin.clusters().createCluster("usc", ClusterData.builder().serviceUrl(adminUrl.toString()).build());
             admin.tenants().createTenant("prop",
                     new TenantInfoImpl(Sets.newHashSet("appid1"), Sets.newHashSet("usc")));
-            admin.namespaces().createNamespace("prop/ns-quota");
-            admin.namespaces().setNamespaceReplicationClusters("prop/ns-quota", Sets.newHashSet("usc"));
-            admin.namespaces().createNamespace("prop/quotahold");
-            admin.namespaces().setNamespaceReplicationClusters("prop/quotahold", Sets.newHashSet("usc"));
-            admin.namespaces().createNamespace("prop/quotaholdasync");
-            admin.namespaces().setNamespaceReplicationClusters("prop/quotaholdasync", Sets.newHashSet("usc"));
         } catch (Throwable t) {
             LOG.error("Error setting up broker test", t);
             fail("Broker test setup failed");
         }
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterClass(alwaysRun = true)
     void shutdown() throws Exception {
         try {
             if (admin != null) {
@@ -142,6 +142,24 @@ public class BacklogQuotaManagerTest {
             LOG.error("Error cleaning up broker test setup state", t);
             fail("Broker test cleanup failed");
         }
+    }
+
+    @BeforeMethod(alwaysRun = true)
+    void createNamespaces() throws PulsarAdminException {
+        config.setPreciseTimeBasedBacklogQuotaCheck(false);
+        admin.namespaces().createNamespace("prop/ns-quota");
+        admin.namespaces().setNamespaceReplicationClusters("prop/ns-quota", Sets.newHashSet("usc"));
+        admin.namespaces().createNamespace("prop/quotahold");
+        admin.namespaces().setNamespaceReplicationClusters("prop/quotahold", Sets.newHashSet("usc"));
+        admin.namespaces().createNamespace("prop/quotaholdasync");
+        admin.namespaces().setNamespaceReplicationClusters("prop/quotaholdasync", Sets.newHashSet("usc"));
+    }
+
+    @AfterMethod(alwaysRun = true)
+    void clearNamespaces() throws PulsarAdminException {
+        admin.namespaces().deleteNamespace("prop/ns-quota", true);
+        admin.namespaces().deleteNamespace("prop/quotahold", true);
+        admin.namespaces().deleteNamespace("prop/quotaholdasync", true);
     }
 
     private void rolloverStats() {
@@ -179,7 +197,7 @@ public class BacklogQuotaManagerTest {
 
             rolloverStats();
 
-            TopicStats stats = admin.topics().getStats(topic1);
+            TopicStats stats = getTopicStats(topic1);
 
             // overall backlogSize should be zero because we only have readers
             assertEquals(stats.getBacklogSize(), 0, "backlog size is [" + stats.getBacklogSize() + "]");
@@ -190,11 +208,12 @@ public class BacklogQuotaManagerTest {
             assertEquals(nonDurableSubscriptionBacklog, MAX_ENTRIES_PER_LEDGER,
               "non-durable subscription backlog is [" + nonDurableSubscriptionBacklog + "]");
 
+            MessageIdImpl msgId = null;
             try {
                 // try to send over backlog quota and make sure it fails
                 for (int i = 0; i < numMsgs; i++) {
                     content[0] = (byte) (content[0] + 1);
-                    MessageId msgId = producer.send(content);
+                    msgId = (MessageIdImpl) producer.send(content);
                 }
             } catch (PulsarClientException ce) {
                 fail("Should not have gotten exception: " + ce.getMessage());
@@ -204,6 +223,7 @@ public class BacklogQuotaManagerTest {
             //  However, trimming of ledgers are piggy packed onto ledger operations.
             //  So if there isn't new data coming in, trimming never occurs.
             //  We need to trigger trimming on a schedule to actually delete all remaining ledgers
+            MessageIdImpl finalMsgId = msgId;
             Awaitility.await().untilAsserted(() -> {
                 // make sure ledgers are trimmed
                 PersistentTopicInternalStats internalStats =
@@ -213,7 +233,7 @@ public class BacklogQuotaManagerTest {
                 assertEquals(internalStats.ledgers.size(), 1);
 
                 // check if its the expected ledger id given MAX_ENTRIES_PER_LEDGER
-                assertEquals(internalStats.ledgers.get(0).ledgerId, (2 * numMsgs / MAX_ENTRIES_PER_LEDGER) - 1);
+                assertEquals(internalStats.ledgers.get(0).ledgerId, finalMsgId.getLedgerId());
             });
 
             // check reader can still read with out error
@@ -226,6 +246,12 @@ public class BacklogQuotaManagerTest {
                 LOG.info("msg read: {} - {}", msg.getMessageId(), msg.getData()[0]);
             }
         }
+    }
+
+    private TopicStats getTopicStats(String topic1) throws PulsarAdminException {
+        TopicStats stats =
+                admin.topics().getStats(topic1, GetStatsOptions.builder().getPreciseBacklog(true).build());
+        return stats;
     }
 
     @Test
@@ -251,24 +277,26 @@ public class BacklogQuotaManagerTest {
             Thread.sleep(TIME_TO_CHECK_BACKLOG_QUOTA * 1000);
             admin.brokers().backlogQuotaCheck();
             rolloverStats();
-            TopicStats stats = admin.topics().getStats(topic1);
+            TopicStats stats = getTopicStats(topic1);
             // overall backlogSize should be zero because we only have readers
             assertEquals(stats.getBacklogSize(), 0, "backlog size is [" + stats.getBacklogSize() + "]");
             // non-durable mes should still
             assertEquals(stats.getSubscriptions().size(), 1);
             long nonDurableSubscriptionBacklog = stats.getSubscriptions().values().iterator().next().getMsgBacklog();
             assertEquals(nonDurableSubscriptionBacklog, MAX_ENTRIES_PER_LEDGER,
-              "non-durable subscription backlog is [" + nonDurableSubscriptionBacklog + "]"); ;
+              "non-durable subscription backlog is [" + nonDurableSubscriptionBacklog + "]");
+            MessageIdImpl messageId = null;
             try {
                 // try to send over backlog quota and make sure it fails
                 for (int i = 0; i < numMsgs; i++) {
                     content[0] = (byte) (content[0] + 1);
-                    producer.send(content);
+                    messageId = (MessageIdImpl) producer.send(content);
                 }
             } catch (PulsarClientException ce) {
                 fail("Should not have gotten exception: " + ce.getMessage());
             }
 
+            MessageIdImpl finalMessageId = messageId;
             Awaitility.await().untilAsserted(() -> {
                 // make sure ledgers are trimmed
                 PersistentTopicInternalStats internalStats = admin.topics().getInternalStats(topic1, false);
@@ -277,7 +305,7 @@ public class BacklogQuotaManagerTest {
                 assertEquals(internalStats.ledgers.size(), 1);
 
                 // check if its the expected ledger id given MAX_ENTRIES_PER_LEDGER
-                assertEquals(internalStats.ledgers.get(0).ledgerId, (2 * numMsgs / MAX_ENTRIES_PER_LEDGER) - 1);
+                assertEquals(internalStats.ledgers.get(0).ledgerId, finalMessageId.getLedgerId());
             });
             // check reader can still read with out error
 
@@ -321,7 +349,7 @@ public class BacklogQuotaManagerTest {
             Thread.sleep(TIME_TO_CHECK_BACKLOG_QUOTA * 1000);
             admin.brokers().backlogQuotaCheck();
             rolloverStats();
-            TopicStats stats = admin.topics().getStats(topic1);
+            TopicStats stats = getTopicStats(topic1);
             // overall backlogSize should be zero because we only have readers
             assertEquals(stats.getBacklogSize(), 0, "backlog size is [" + stats.getBacklogSize() + "]");
             // non-durable mes should still
@@ -396,7 +424,7 @@ public class BacklogQuotaManagerTest {
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA + 1) * 1000);
         rolloverStats();
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertTrue(stats.getBacklogSize() < 10 * 1024, "Storage size is [" + stats.getStorageSize() + "]");
     }
 
@@ -428,14 +456,14 @@ public class BacklogQuotaManagerTest {
             consumer2.receive();
         }
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 9);
         assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 9);
 
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA * 2) * 1000);
         rolloverStats();
 
-        stats = admin.topics().getStats(topic1);
+        stats = getTopicStats(topic1);
         // All messages for both subscription should be cleaned up from backlog by backlog monitor task.
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 0);
         assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 0);
@@ -469,14 +497,14 @@ public class BacklogQuotaManagerTest {
             consumer2.receive();
         }
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 14);
         assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 14);
 
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA * 2) * 1000);
         rolloverStats();
 
-        stats = admin.topics().getStats(topic1);
+        stats = getTopicStats(topic1);
         PersistentTopic topic1Reference = (PersistentTopic) pulsar.getBrokerService().getTopicReference(topic1).get();
         ManagedLedgerImpl ml = (ManagedLedgerImpl) topic1Reference.getManagedLedger();
         // Messages on first 2 ledgers should be expired, backlog is number of
@@ -495,6 +523,7 @@ public class BacklogQuotaManagerTest {
                         .limitTime(TIME_TO_CHECK_BACKLOG_QUOTA)
                         .retentionPolicy(BacklogQuota.RetentionPolicy.consumer_backlog_eviction)
                         .build(), BacklogQuota.BacklogQuotaType.message_age);
+        config.setPreciseTimeBasedBacklogQuotaCheck(true);
         PulsarClient client = PulsarClient.builder().serviceUrl(adminUrl.toString()).statsInterval(0, TimeUnit.SECONDS)
                 .build();
 
@@ -507,30 +536,27 @@ public class BacklogQuotaManagerTest {
         consumer.receive();
 
         admin.topics().unload(topic);
-        Awaitility.await().until(consumer::isConnected);
-        PersistentTopicInternalStats internalStats = admin.topics().getInternalStats(topic);
-        assertEquals(internalStats.ledgers.size(), 2);
-        assertEquals(internalStats.ledgers.get(1).entries, 0);
 
-        TopicStats stats = admin.topics().getStats(topic);
+        Awaitility.await().untilAsserted(() -> {
+            PersistentTopicInternalStats internalStats = admin.topics().getInternalStats(topic);
+            assertEquals(internalStats.ledgers.size(), 2);
+            assertEquals(internalStats.ledgers.get(1).entries, 0);
+        });
+
+        TopicStats stats = getTopicStats(topic);
         assertEquals(stats.getSubscriptions().get(subName).getMsgBacklog(), 1);
 
-        TimeUnit.SECONDS.sleep(TIME_TO_CHECK_BACKLOG_QUOTA);
+        rolloverStats();
 
-        Awaitility.await()
-                .pollInterval(Duration.ofSeconds(1))
-                .atMost(Duration.ofSeconds(TIME_TO_CHECK_BACKLOG_QUOTA))
-                .untilAsserted(() -> {
-                    rolloverStats();
-
-                    // Cause the last ledger is empty, it is not possible to skip first ledger,
-                    // so the number of ledgers will keep unchanged, and backlog is clear
-                    PersistentTopicInternalStats latestInternalStats = admin.topics().getInternalStats(topic);
-                    assertEquals(latestInternalStats.ledgers.size(), 2);
-                    assertEquals(latestInternalStats.ledgers.get(1).entries, 0);
-                    TopicStats latestStats = admin.topics().getStats(topic);
-                    assertEquals(latestStats.getSubscriptions().get(subName).getMsgBacklog(), 0);
-                });
+        Awaitility.await().untilAsserted(() -> {
+            // Cause the last ledger is empty, it is not possible to skip first ledger,
+            // so the number of ledgers will keep unchanged, and backlog is clear
+            PersistentTopicInternalStats latestInternalStats = admin.topics().getInternalStats(topic);
+            assertEquals(latestInternalStats.ledgers.size(), 2);
+            assertEquals(latestInternalStats.ledgers.get(1).entries, 0);
+            TopicStats latestStats = getTopicStats(topic);
+            assertEquals(latestStats.getSubscriptions().get(subName).getMsgBacklog(), 0);
+        });
 
         client.close();
     }
@@ -566,7 +592,7 @@ public class BacklogQuotaManagerTest {
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA + 1) * 1000);
         rolloverStats();
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertTrue(stats.getBacklogSize() <= 10 * 1024, "Storage size is [" + stats.getStorageSize() + "]");
     }
 
@@ -598,7 +624,7 @@ public class BacklogQuotaManagerTest {
             consumer2.receive();
         }
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 9);
         assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 9);
 
@@ -610,7 +636,7 @@ public class BacklogQuotaManagerTest {
 
         Thread.sleep(1000);
         rolloverStats();
-        stats = admin.topics().getStats(topic1);
+        stats = getTopicStats(topic1);
         // sub1 has empty backlog as it acked all messages
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 0);
         assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 9);
@@ -618,7 +644,7 @@ public class BacklogQuotaManagerTest {
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA * 2) * 1000);
         rolloverStats();
 
-        stats = admin.topics().getStats(topic1);
+        stats = getTopicStats(topic1);
         // sub2 has empty backlog because it's backlog get cleaned up by backlog quota monitor task
         assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 0);
         client.close();
@@ -637,11 +663,6 @@ public class BacklogQuotaManagerTest {
     public void testConsumerBacklogEvictionWithAckTimeQuota() throws Exception {
         assertEquals(admin.namespaces().getBacklogQuotaMap("prop/ns-quota"),
                 Maps.newHashMap());
-        admin.namespaces().setBacklogQuota("prop/ns-quota",
-                BacklogQuota.builder()
-                        .limitTime(2 * TIME_TO_CHECK_BACKLOG_QUOTA)
-                        .retentionPolicy(BacklogQuota.RetentionPolicy.consumer_backlog_eviction)
-                        .build(), BacklogQuota.BacklogQuotaType.message_age);
         @Cleanup
         PulsarClient client = PulsarClient.builder().serviceUrl(adminUrl.toString()).build();
 
@@ -664,7 +685,7 @@ public class BacklogQuotaManagerTest {
         }
 
         {
-            TopicStats stats = admin.topics().getStats(topic1);
+            TopicStats stats = getTopicStats(topic1);
             assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 14);
             assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 14);
         }
@@ -683,11 +704,17 @@ public class BacklogQuotaManagerTest {
                 .pollInterval(Duration.ofSeconds(1))
                 .untilAsserted(() -> {
                     rolloverStats();
-                    TopicStats stats = admin.topics().getStats(topic1);
+                    TopicStats stats = getTopicStats(topic1);
                     // sub1 has empty backlog as it acked all messages
                     assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 0);
                     assertEquals(stats.getSubscriptions().get(subName2).getMsgBacklog(), 14);
                 });
+
+        admin.namespaces().setBacklogQuota("prop/ns-quota",
+                BacklogQuota.builder()
+                        .limitTime(2 * TIME_TO_CHECK_BACKLOG_QUOTA)
+                        .retentionPolicy(BacklogQuota.RetentionPolicy.consumer_backlog_eviction)
+                        .build(), BacklogQuota.BacklogQuotaType.message_age);
 
         Awaitility.await()
                 .pollInterval(Duration.ofSeconds(1))
@@ -695,11 +722,9 @@ public class BacklogQuotaManagerTest {
                 .untilAsserted(() -> {
                     // Messages on first 2 ledgers should be expired, backlog is number of
                     // message in current ledger which should be 4.
-                    long msgBacklog = admin.topics().getStats(topic1).getSubscriptions().get(subName2).getMsgBacklog();
-                    // TODO: for some reason the backlog size is sometimes off by one
-                    // Internally there's a method `long getNumberOfEntriesInBacklog(boolean getPreciseBacklog)`
-                    // on org.apache.pulsar.broker.service.Subscription interface
-                    // the `boolean getPreciseBacklog` parameter indicates that the backlog size isn't accurate
+                    long msgBacklog =
+                            getTopicStats(topic1)
+                                    .getSubscriptions().get(subName2).getMsgBacklog();
                     assertEquals(msgBacklog, 4, 1);
                 });
     }
@@ -775,7 +800,7 @@ public class BacklogQuotaManagerTest {
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA + 1) * 1000);
         rolloverStats();
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertTrue(stats.getBacklogSize() <= 10 * 1024, "Storage size is [" + stats.getStorageSize() + "]");
     }
 
@@ -953,7 +978,7 @@ public class BacklogQuotaManagerTest {
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA + 1) * 1000);
         rolloverStats();
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertTrue(stats.getBacklogSize() <= 15 * 1024, "Storage size is [" + stats.getStorageSize() + "]");
     }
 
@@ -994,7 +1019,7 @@ public class BacklogQuotaManagerTest {
 
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA + 1) * 1000);
         rolloverStats();
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertEquals(stats.getPublishers().size(), 0,
                 "Number of producers on topic " + topic1 + " are [" + stats.getPublishers().size() + "]");
     }
@@ -1117,7 +1142,7 @@ public class BacklogQuotaManagerTest {
         assertTrue(gotException, "backlog exceeded exception did not occur");
         // now remove backlog and ensure that producer is unblocked;
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         int backlog = (int) stats.getSubscriptions().get(subName1).getMsgBacklog();
 
         for (int i = 0; i < backlog; i++) {
@@ -1181,7 +1206,7 @@ public class BacklogQuotaManagerTest {
         assertTrue(gotException, "backlog exceeded exception did not occur");
 
         // now remove backlog and ensure that producer is unblocked;
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), numMsgs);
 
         for (int i = 0; i < numMsgs; i++) {
@@ -1190,7 +1215,7 @@ public class BacklogQuotaManagerTest {
 
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA * 2) * 1000);
         rolloverStats();
-        stats = admin.topics().getStats(topic1);
+        stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 0);
         // publish should work now
         Exception sendException = null;
@@ -1246,7 +1271,7 @@ public class BacklogQuotaManagerTest {
         assertTrue(gotException, "backlog exceeded exception did not occur");
 
         // now remove backlog and ensure that producer is unblocked;
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), numMsgs);
 
         for (int i = 0; i < numMsgs; i++) {
@@ -1255,7 +1280,7 @@ public class BacklogQuotaManagerTest {
 
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA * 2) * 1000);
         rolloverStats();
-        stats = admin.topics().getStats(topic1);
+        stats = getTopicStats(topic1);
         assertEquals(stats.getSubscriptions().get(subName1).getMsgBacklog(), 0);
         // publish should work now
         Exception sendException = null;
@@ -1272,7 +1297,7 @@ public class BacklogQuotaManagerTest {
         client.close();
     }
 
-    @Test(dataProvider = "backlogQuotaSizeGB")
+    @Test(dataProvider = "backlogQuotaSizeGB", priority = 1)
     public void testBacklogQuotaInGB(boolean backlogQuotaSizeGB) throws Exception {
 
         pulsar.close();
@@ -1308,7 +1333,7 @@ public class BacklogQuotaManagerTest {
         Thread.sleep((TIME_TO_CHECK_BACKLOG_QUOTA + 1) * 1000);
         rolloverStats();
 
-        TopicStats stats = admin.topics().getStats(topic1);
+        TopicStats stats = getTopicStats(topic1);
         assertTrue(stats.getBacklogSize() < 10 * 1024, "Storage size is [" + stats.getStorageSize() + "]");
     }
     private static final Logger LOG = LoggerFactory.getLogger(BacklogQuotaManagerTest.class);

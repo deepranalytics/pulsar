@@ -424,6 +424,13 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         PartitionedTopicMetadata pMetadata2 = persistentTopics.getPartitionedMetadata(
                 testTenant, testNamespace, topicName2, true, false);
         Assert.assertNull(pMetadata2.properties);
+        AsyncResponse metaResponse = mock(AsyncResponse.class);
+        ArgumentCaptor<Map> metaResponseCaptor2 = ArgumentCaptor.forClass(Map.class);
+        persistentTopics.getProperties(metaResponse,
+                testTenant, testNamespace, topicName2, true);
+        verify(metaResponse, timeout(5000).times(1)).resume(metaResponseCaptor2.capture());
+        Assert.assertNotNull(metaResponseCaptor2.getValue());
+        Assert.assertEquals(metaResponseCaptor2.getValue().get("key1"), "value1");
     }
 
     @Test
@@ -447,6 +454,12 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
             Assert.assertEquals(pMetadata2.properties.size(), 1);
             Assert.assertEquals(pMetadata2.properties, topicMetadata);
         });
+        AsyncResponse response3 = mock(AsyncResponse.class);
+        ArgumentCaptor<Map> metaResponseCaptor2 = ArgumentCaptor.forClass(Map.class);
+        persistentTopics.getProperties(response3, testTenant, testNamespace, topicName2, true);
+        verify(response3, timeout(5000).times(1)).resume(metaResponseCaptor2.capture());
+        Assert.assertNotNull(metaResponseCaptor2.getValue());
+        Assert.assertEquals(metaResponseCaptor2.getValue().get("key1"), "value1");
     }
 
     @Test
@@ -670,7 +683,11 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         Set<AuthAction> expectActions = new HashSet<>();
         expectActions.add(AuthAction.produce);
         persistentTopics.grantPermissionsOnTopic(testTenant, testNamespace, topicName, role, expectActions);
-        persistentTopics.revokePermissionsOnTopic(testTenant, testNamespace, topicName, role);
+        AsyncResponse response = mock(AsyncResponse.class);
+        ArgumentCaptor<Response> responseCaptor = ArgumentCaptor.forClass(Response.class);
+        persistentTopics.revokePermissionsOnTopic(response, testTenant, testNamespace, topicName, role);
+        verify(response, timeout(5000).times(1)).resume(responseCaptor.capture());
+        Assert.assertEquals(responseCaptor.getValue().getStatus(), Response.Status.NO_CONTENT.getStatusCode());
         Map<String, Set<AuthAction>> permissions = persistentTopics.getPermissionsOnTopic(testTenant, testNamespace, topicName);
         Assert.assertEquals(permissions.get(role), null);
     }
@@ -689,7 +706,12 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         Set<AuthAction> expectActions = new HashSet<>();
         expectActions.add(AuthAction.produce);
         persistentTopics.grantPermissionsOnTopic(testTenant, testNamespace, partitionedTopicName, role, expectActions);
-        persistentTopics.revokePermissionsOnTopic(testTenant, testNamespace, partitionedTopicName, role);
+        response = mock(AsyncResponse.class);
+        persistentTopics.revokePermissionsOnTopic(response, testTenant, testNamespace, partitionedTopicName, role);
+        responseCaptor = ArgumentCaptor.forClass(Response.class);
+        verify(response, timeout(5000).times(1)).resume(responseCaptor.capture());
+        Assert.assertEquals(responseCaptor.getValue().getStatus(), Response.Status.NO_CONTENT.getStatusCode());
+
         Map<String, Set<AuthAction>> permissions = persistentTopics.getPermissionsOnTopic(testTenant, testNamespace,
                 partitionedTopicName);
         Assert.assertEquals(permissions.get(role), null);
@@ -775,7 +797,7 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
             completableFuture = batchProducer.sendAsync("a".getBytes());
         }
         completableFuture.get();
-        Assert.assertEquals(Optional.ofNullable(admin.topics().getBacklogSizeByMessageId(topicName + "-partition-0", MessageId.earliest)), Optional.of(350L));
+        Assert.assertEquals(Optional.ofNullable(admin.topics().getBacklogSizeByMessageId(topicName + "-partition-0", MessageId.earliest)), Optional.of(320L));
     }
 
     @Test
@@ -1222,6 +1244,7 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         doReturn(brokerService).when(pulsar).getBrokerService();
         CompletableFuture<Optional<Topic>> completableFuture = new CompletableFuture<>();
         doReturn(completableFuture).when(brokerService).getTopicIfExists(topic);
+        completableFuture.completeExceptionally(new RuntimeException("TimeoutException"));
         try {
             admin.topics().resetCursor(topic, "my-sub", System.currentTimeMillis());
             Assert.fail();

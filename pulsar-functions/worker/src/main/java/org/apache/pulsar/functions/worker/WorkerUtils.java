@@ -20,6 +20,7 @@ package org.apache.pulsar.functions.worker;
 
 import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.apache.pulsar.metadata.impl.MetadataStoreFactoryImpl.removeIdentifierFromMetadataURL;
 
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -41,9 +42,12 @@ import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.Reader;
 import org.apache.pulsar.client.api.ReaderBuilder;
+import org.apache.pulsar.client.api.SizeUnit;
+import org.apache.pulsar.client.internal.PropertiesUtils;
 import org.apache.pulsar.common.conf.InternalConfigurationData;
-import org.apache.pulsar.common.policies.data.FunctionInstanceStatsImpl;
+import org.apache.pulsar.common.functions.WorkerInfo;
 import org.apache.pulsar.common.policies.data.FunctionInstanceStatsDataImpl;
+import org.apache.pulsar.common.policies.data.FunctionInstanceStatsImpl;
 import org.apache.pulsar.functions.proto.InstanceCommunication;
 import org.apache.pulsar.functions.runtime.Runtime;
 import org.apache.pulsar.functions.runtime.RuntimeSpawner;
@@ -159,6 +163,13 @@ public final class WorkerUtils {
                         workerConfig.getBookkeeperClientAuthenticationParameters());
             }
         }
+        // Map arbitrary bookkeeper client configuration into DLog Config. Note that this only configures the
+        // bookie client.
+        PropertiesUtils.filterAndMapProperties(workerConfig.getProperties(), "bookkeeper_", "bkc.")
+                .forEach((key, value) -> {
+                    log.info("Applying DLog BookKeeper client configuration setting {}={}", key, value);
+                    conf.setProperty(key, value);
+                });
         return conf;
     }
 
@@ -174,7 +185,7 @@ public final class WorkerUtils {
         // for BC purposes
         if (internalConf.getBookkeeperMetadataServiceUri() == null) {
             ledgersRootPath = internalConf.getLedgersRootPath();
-            ledgersStoreServers = internalConf.getZookeeperServers();
+            ledgersStoreServers = removeIdentifierFromMetadataURL(internalConf.getMetadataStoreUrl());
             chrootPath = "";
         } else {
             URI metadataServiceUri = URI.create(internalConf.getBookkeeperMetadataServiceUri());
@@ -218,12 +229,20 @@ public final class WorkerUtils {
     }
 
     public static PulsarAdmin getPulsarAdminClient(String pulsarWebServiceUrl) {
-        return getPulsarAdminClient(pulsarWebServiceUrl, null, null, null, null, null);
+        return getPulsarAdminClient(pulsarWebServiceUrl, null, null, null, null, null, null);
     }
 
     public static PulsarAdmin getPulsarAdminClient(String pulsarWebServiceUrl, String authPlugin, String authParams,
                                                    String tlsTrustCertsFilePath, Boolean allowTlsInsecureConnection,
                                                    Boolean enableTlsHostnameVerificationEnable) {
+        return getPulsarAdminClient(pulsarWebServiceUrl, authPlugin, authParams, tlsTrustCertsFilePath,
+                allowTlsInsecureConnection, enableTlsHostnameVerificationEnable, null);
+    }
+
+    public static PulsarAdmin getPulsarAdminClient(String pulsarWebServiceUrl, String authPlugin, String authParams,
+                                                   String tlsTrustCertsFilePath, Boolean allowTlsInsecureConnection,
+                                                   Boolean enableTlsHostnameVerificationEnable,
+                                                   WorkerConfig workerConfig) {
         log.info("Create Pulsar Admin to service url {}: "
             + "authPlugin = {}, authParams = {}, "
             + "tlsTrustCerts = {}, allowTlsInsecureConnector = {}, enableTlsHostnameVerification = {}",
@@ -231,6 +250,13 @@ public final class WorkerUtils {
             tlsTrustCertsFilePath, allowTlsInsecureConnection, enableTlsHostnameVerificationEnable);
         try {
             PulsarAdminBuilder adminBuilder = PulsarAdmin.builder().serviceHttpUrl(pulsarWebServiceUrl);
+            if (workerConfig != null) {
+                // Apply all arbitrary configuration. This must be called before setting any fields annotated as
+                // @Secret on the ClientConfigurationData object because of the way they are serialized.
+                // See https://github.com/apache/pulsar/issues/8509 for more information.
+                adminBuilder.loadConf(
+                        PropertiesUtils.filterAndMapProperties(workerConfig.getProperties(), "brokerClient_"));
+            }
             if (isNotBlank(authPlugin) && isNotBlank(authParams)) {
                 adminBuilder.authentication(authPlugin, authParams);
             }
@@ -243,6 +269,7 @@ public final class WorkerUtils {
             if (enableTlsHostnameVerificationEnable != null) {
                 adminBuilder.enableTlsHostnameVerification(enableTlsHostnameVerificationEnable);
             }
+
             return adminBuilder.build();
         } catch (PulsarClientException e) {
             log.error("Error creating pulsar admin client", e);
@@ -252,17 +279,35 @@ public final class WorkerUtils {
 
     public static PulsarClient getPulsarClient(String pulsarServiceUrl) {
         return getPulsarClient(pulsarServiceUrl, null, null, null,
-                null, null, null);
+                null, null, null, null);
     }
 
     public static PulsarClient getPulsarClient(String pulsarServiceUrl, String authPlugin, String authParams,
                                                Boolean useTls, String tlsTrustCertsFilePath,
                                                Boolean allowTlsInsecureConnection,
                                                Boolean enableTlsHostnameVerificationEnable) {
+        return getPulsarClient(pulsarServiceUrl, authPlugin, authParams, useTls, tlsTrustCertsFilePath,
+                allowTlsInsecureConnection, enableTlsHostnameVerificationEnable, null);
+    }
+
+    public static PulsarClient getPulsarClient(String pulsarServiceUrl, String authPlugin, String authParams,
+                                               Boolean useTls, String tlsTrustCertsFilePath,
+                                               Boolean allowTlsInsecureConnection,
+                                               Boolean enableTlsHostnameVerificationEnable,
+                                               WorkerConfig workerConfig) {
 
         try {
-            ClientBuilder clientBuilder = PulsarClient.builder().serviceUrl(pulsarServiceUrl);
+            ClientBuilder clientBuilder = PulsarClient.builder()
+                    .memoryLimit(0, SizeUnit.BYTES)
+                    .serviceUrl(pulsarServiceUrl);
 
+            if (workerConfig != null) {
+                // Apply all arbitrary configuration. This must be called before setting any fields annotated as
+                // @Secret on the ClientConfigurationData object because of the way they are serialized.
+                // See https://github.com/apache/pulsar/issues/8509 for more information.
+                clientBuilder.loadConf(
+                        PropertiesUtils.filterAndMapProperties(workerConfig.getProperties(), "brokerClient_"));
+            }
             if (isNotBlank(authPlugin)
                     && isNotBlank(authParams)) {
                 clientBuilder.authentication(authPlugin, authParams);
@@ -279,7 +324,6 @@ public final class WorkerUtils {
             if (enableTlsHostnameVerificationEnable != null) {
                 clientBuilder.enableTlsHostnameVerification(enableTlsHostnameVerificationEnable);
             }
-
             return clientBuilder.build();
         } catch (PulsarClientException e) {
             log.error("Error creating pulsar client", e);
@@ -392,5 +436,13 @@ public final class WorkerUtils {
 
     public static class NotLeaderAnymore extends Exception {
 
+    }
+
+    public static Supplier<Boolean> getIsStillLeaderSupplier(final MembershipManager membershipManager,
+                                                             final String workerId) {
+        return () -> {
+            WorkerInfo workerInfo = membershipManager.getLeader();
+            return workerInfo != null && workerInfo.getWorkerId().equals(workerId);
+        };
     }
 }
