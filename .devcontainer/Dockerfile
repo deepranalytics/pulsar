@@ -4,7 +4,7 @@
 # ARG VARIANT="buster"
 # FROM mcr.microsoft.com/vscode/devcontainers/cpp:0-${VARIANT}
 
-FROM deepr/rhel8-development:karan-k
+FROM ghcr.io/deepranalytics/rhel8-development:karan-k
 
 # [Optional] Uncomment this section to install additional packages.
 # RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
