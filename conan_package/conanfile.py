@@ -10,7 +10,7 @@ from pathlib import Path
 # Reference for conanfile.py: https://github.com/conan-io/conan/issues/5948
 class CMSConan(ConanFile):
     name = "pulsar"
-    version = "2.10.0"
+    version = "2.10.2"
     license = "<DeepR proprietary license>"
     author = "<Lalit Gangwar> <lalit.gangwar@equtick.com>"
     # url = "<Package recipe repository url here, for issues about the package>"
