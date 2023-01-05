@@ -6,7 +6,7 @@ import subprocess
 g_maturity = "prod"
 # Either (alpha, beta, etc.)
 g_release_type = "stable"
-g_release_version = "2.9.1"
+g_release_version = "2.10.0"
 
 class bcolors:
     HEADER = '\033[95m'

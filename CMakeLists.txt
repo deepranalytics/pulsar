@@ -7,6 +7,7 @@ add_definitions(-DCMS_REVISION_VER=0)
 
 project(pulsar)
 #set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_LIST_DIR}/x64/unix/${CMAKE_BUILD_TYPE})
+#set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_LIST_DIR}/x64/windows/${CMAKE_BUILD_TYPE})
 
 # Enable cpp 17 standard.
 set(CMAKE_CXX_STANDARD 17)
